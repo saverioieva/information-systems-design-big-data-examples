@@ -1,0 +1,32 @@
+services:
+  app:
+    build: .
+    environment:
+      REDIS_HOST: redis
+      APP_MESSAGE: ${APP_MESSAGE:-Hello from development}
+      APP_ENV: ${APP_ENV:-development}
+    ports:
+      - "8080:5000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis_data:

@@ -1,0 +1,43 @@
+services:
+  app:
+    build: ./app
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/metrics')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - monitor-net
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - monitor-net
+    depends_on:
+      app:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:9.5.2
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/etc/grafana/dashboards
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    networks:
+      - monitor-net
+    depends_on:
+      - prometheus
+
+networks:
+  monitor-net:
+    driver: bridge

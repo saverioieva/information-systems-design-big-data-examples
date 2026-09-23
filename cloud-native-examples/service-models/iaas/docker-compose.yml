@@ -1,0 +1,11 @@
+services:
+  vm:
+    image: ubuntu:24.04
+    command: ["sleep", "infinity"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - iaas-disk:/srv/data
+
+volumes:
+  iaas-disk:

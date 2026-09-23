@@ -1,0 +1,31 @@
+{
+  "id": null,
+  "title": "Flask App Dashboard",
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "graph",
+      "title": "Requests Over Time",
+      "targets": [
+        {
+                    "expr": "sum by (method, endpoint, http_status) (rate(flask_http_request_total[1m]))",
+          "legendFormat": "{{method}} {{http_status}}"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 }
+    },
+    {
+      "type": "graph",
+      "title": "Request Duration (avg)",
+      "targets": [
+        {
+          "expr": "rate(flask_http_request_duration_seconds_sum[1m]) / rate(flask_http_request_duration_seconds_count[1m])",
+          "legendFormat": "duration"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 8 }
+    }
+  ],
+  "schemaVersion": 16,
+  "version": 1
+}

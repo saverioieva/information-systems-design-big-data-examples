@@ -1,0 +1,25 @@
+services:
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web
+
+  web:
+    # IMPORTANT: keep a CONSTANT tag so Compose config doesn't change between v1 and v2.
+    # We will rebuild this tag (rolling-web:prod) with a different APP_VERSION baked into the image.
+    image: rolling-web:prod
+    build:
+      context: ./web
+      args:
+        APP_VERSION: ${APP_VERSION:-v1}
+    expose:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

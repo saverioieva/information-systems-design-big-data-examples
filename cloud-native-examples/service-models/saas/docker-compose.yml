@@ -1,0 +1,25 @@
+services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: student
+      POSTGRES_PASSWORD: student
+      POSTGRES_DB: course
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U student -d course"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  adminer:
+    image: adminer:4.8.1
+    ports:
+      - "8080:8080"
+    depends_on:
+      database:
+        condition: service_healthy
+
+volumes:
+  database-data:
