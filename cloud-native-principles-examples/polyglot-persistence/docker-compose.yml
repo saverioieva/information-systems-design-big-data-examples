@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    environment:
+      REDIS_HOST: cache
+      CACHE_INVALIDATION: ${CACHE_INVALIDATION:-on}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-30}
+    volumes:
+      - catalog_data:/data
+    ports:
+      - "8080:5000"
+
+  cache:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+volumes:
+  catalog_data:

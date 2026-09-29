@@ -1,0 +1,7 @@
+services:
+  api:
+    build: .
+    environment:
+      API_MODE: ${API_MODE:-v1}
+    ports:
+      - "8080:5000"

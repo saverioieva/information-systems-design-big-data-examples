@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    environment:
+      APP_MESSAGE: ${APP_MESSAGE:-Hello}
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    cpus: 0.50
+    mem_limit: 128m
+    pids_limit: 64
+    stop_grace_period: 8s
+    ports:
+      - "8080:5000"

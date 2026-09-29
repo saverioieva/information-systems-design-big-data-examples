@@ -1,0 +1,12 @@
+services:
+  orders:
+    build: .
+    environment:
+      CATALOG_BACKEND: ${CATALOG_BACKEND:-memory}
+      CATALOG_URL: http://catalog:5000
+    ports:
+      - "8080:5000"
+
+  catalog:
+    build: .
+    command: ["python", "catalog.py"]

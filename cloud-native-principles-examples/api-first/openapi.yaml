@@ -1,0 +1,30 @@
+openapi: 3.0.3
+info:
+  title: Product API teaching contract
+  version: 1.1.0
+paths:
+  /products/1:
+    get:
+      responses:
+        '200':
+          description: Product with a monetary amount expressed in cents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, price_cents]
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  price_cents:
+                    type: integer
+                    minimum: 0
+                  currency:
+                    type: string
+                    example: EUR
+                  price_euros:
+                    type: number
+                    format: double
+                    minimum: 0

@@ -1,0 +1,15 @@
+services:
+  catalog:
+    build: .
+    environment:
+      RECOMMENDATIONS_URL: http://recommendations:5000
+      FRAGILE_TIMEOUT_SECONDS: ${FRAGILE_TIMEOUT_SECONDS:-5}
+      RESILIENT_TIMEOUT_SECONDS: ${RESILIENT_TIMEOUT_SECONDS:-0.3}
+    ports:
+      - "8080:5000"
+
+  recommendations:
+    build: .
+    command: ["python", "recommendations.py"]
+    environment:
+      DELAY_SECONDS: ${DELAY_SECONDS:-0}
