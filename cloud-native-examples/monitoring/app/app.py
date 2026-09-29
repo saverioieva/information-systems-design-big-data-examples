@@ -11,8 +11,8 @@ REQUEST_LATENCY = Histogram('flask_http_request_duration_seconds', 'Request late
 @app.route('/')
 def index():
     start = time.time()
-    number = random.randint(1, 100)
-    time.sleep(random.random())
+    number = round(random.uniform(0.2, 1.0), 2)
+    time.sleep(number)
     status = 200
     REQUEST_COUNT.labels(method=request.method, endpoint="/", http_status=status).inc()
     REQUEST_LATENCY.observe(time.time() - start)
