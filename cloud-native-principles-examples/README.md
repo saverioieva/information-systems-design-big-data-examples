@@ -13,8 +13,9 @@ After completing this block, students should be able to:
 - explain how an API contract affects consumers;
 - distinguish an authoritative data store from a disposable cache;
 - observe how timeouts and fallbacks isolate optional failures;
-- inspect container lifecycle and runtime constraints;
 - explain how init and sidecar containers preserve a single concern;
+- inspect liveness, readiness, logs, metrics, and request traces;
+- inspect container lifecycle and runtime constraints;
 - distinguish high and low cohesion and tight and loose coupling;
 - connect simple code examples to selected SOLID principles.
 
@@ -26,9 +27,10 @@ After completing this block, students should be able to:
 | 2 | [`polyglot-persistence/`](polyglot-persistence/) | Relational store and Redis cache |
 | 3 | [`failure-isolation/`](failure-isolation/) | Timeout and graceful degradation |
 | 4 | [`single-concern/`](single-concern/) | Main, init, and sidecar container responsibilities |
-| 5 | [`container-constraints/`](container-constraints/) | Lifecycle signals and runtime limits |
-| 6 | [`cohesion-coupling/`](cohesion-coupling/) | High/low cohesion and tight/loose coupling |
-| 7 | [`domain-solid/`](domain-solid/) | Domain boundaries and selected SOLID principles |
+| 5 | [`high-observability/`](high-observability/) | Liveness, readiness, logs, metrics, and request tracing |
+| 6 | [`container-constraints/`](container-constraints/) | Lifecycle signals and runtime limits |
+| 7 | [`cohesion-coupling/`](cohesion-coupling/) | High/low cohesion and tight/loose coupling |
+| 8 | [`domain-solid/`](domain-solid/) | Domain boundaries and selected SOLID principles |
 
 Each example includes its own `README.md` with the commands to run and the
 behavior to observe.

@@ -1,0 +1,56 @@
+services:
+  app:
+    build: .
+    environment:
+      JAEGER_ZIPKIN_ENDPOINT: http://jaeger:9411/api/v2/spans
+    ports:
+      - "8080:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/livez')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      - jaeger
+    networks:
+      - observability-net
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - observability-net
+
+  grafana:
+    image: grafana/grafana:9.5.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - observability-net
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: :9411
+    ports:
+      - "16686:16686"
+    networks:
+      - observability-net
+
+networks:
+  observability-net:
+    driver: bridge
