@@ -1,0 +1,42 @@
+services:
+  init:
+    image: alpine:3.20
+    volumes:
+      - config:/config
+      - logs:/logs
+    command:
+      - sh
+      - -c
+      - |
+        echo "Catalog configuration prepared by init" > /config/message.txt
+        touch /logs/access.log
+        echo "[init] configuration and shared log file prepared"
+
+  app:
+    build: .
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - config:/config:ro
+      - logs:/logs
+    ports:
+      - "8080:5000"
+
+  sidecar:
+    image: alpine:3.20
+    depends_on:
+      app:
+        condition: service_started
+    volumes:
+      - logs:/logs:ro
+    command:
+      - sh
+      - -c
+      - |
+        echo "[sidecar] watching application logs"
+        tail -n 0 -F /logs/access.log
+
+volumes:
+  config:
+  logs:
