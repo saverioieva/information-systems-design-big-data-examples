@@ -10,27 +10,29 @@ time and are designed to be run locally during or after the lecture.
 
 After completing this block, students should be able to:
 
-- explain how an API contract affects consumers;
+- explain API First and Contract First using an OpenAPI contract and Swagger UI;
+- explain how consumer needs shape API responses;
 - distinguish an authoritative data store from a disposable cache;
 - observe how timeouts and fallbacks isolate optional failures;
 - explain how init and sidecar containers preserve a single concern;
 - inspect liveness, readiness, logs, metrics, and request traces;
 - inspect container lifecycle and runtime constraints;
-- distinguish high and low cohesion and tight and loose coupling;
+- explain the seven cohesion levels and the eight coupling levels used in the lecture;
 - connect simple code examples to selected SOLID principles.
 
 ## Examples and recommended sequence
 
 | Step | Example | Main idea |
 |---:|---|---|
-| 1 | [`api-first/`](api-first/) | API contract and consumer compatibility |
-| 2 | [`polyglot-persistence/`](polyglot-persistence/) | Relational store and Redis cache |
-| 3 | [`failure-isolation/`](failure-isolation/) | Timeout and graceful degradation |
-| 4 | [`single-concern/`](single-concern/) | Main, init, and sidecar container responsibilities |
-| 5 | [`high-observability/`](high-observability/) | Liveness, readiness, logs, metrics, and request tracing |
-| 6 | [`container-constraints/`](container-constraints/) | Lifecycle signals and runtime limits |
-| 7 | [`cohesion-coupling/`](cohesion-coupling/) | High/low cohesion and tight/loose coupling |
-| 8 | [`domain-solid/`](domain-solid/) | Domain boundaries and selected SOLID principles |
+| 1 | [`api-first/`](api-first/) | API First, Contract First, OpenAPI/Swagger UI, and consumer compatibility |
+| 2 | [`consumer-first/`](consumer-first/) | Shape interfaces around consumer needs |
+| 3 | [`polyglot-persistence/`](polyglot-persistence/) | Relational store and Redis cache |
+| 4 | [`failure-isolation/`](failure-isolation/) | Timeout and graceful degradation |
+| 5 | [`single-concern/`](single-concern/) | Main, init, and sidecar container responsibilities |
+| 6 | [`high-observability/`](high-observability/) | Liveness, readiness, logs, metrics, and request tracing |
+| 7 | [`container-constraints/`](container-constraints/) | Lifecycle signals and runtime limits |
+| 8 | [`cohesion-coupling/`](cohesion-coupling/) | Seven cohesion levels and eight coupling levels |
+| 9 | [`domain-solid/`](domain-solid/) | Domain boundaries and selected SOLID principles |
 
 Each example includes its own `README.md` with the commands to run and the
 behavior to observe.

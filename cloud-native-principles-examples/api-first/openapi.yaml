@@ -1,30 +1,50 @@
 openapi: 3.0.3
 info:
-  title: Product API teaching contract
+  title: Product API Teaching Contract
+  description: >-
+    Contract-first example: this OpenAPI document defines the public API
+    independently from the Flask implementation.
   version: 1.1.0
+servers:
+  - url: /
 paths:
   /products/1:
     get:
+      summary: Get the teaching product
+      operationId: getProduct
       responses:
         '200':
           description: Product with a monetary amount expressed in cents
           content:
             application/json:
               schema:
-                type: object
-                required: [id, name, price_cents]
-                properties:
-                  id:
-                    type: integer
-                  name:
-                    type: string
-                  price_cents:
-                    type: integer
-                    minimum: 0
-                  currency:
-                    type: string
-                    example: EUR
-                  price_euros:
-                    type: number
-                    format: double
-                    minimum: 0
+                $ref: '#/components/schemas/Product'
+components:
+  schemas:
+    Product:
+      type: object
+      required:
+        - id
+        - name
+        - price_cents
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Notebook
+        price_cents:
+          type: integer
+          minimum: 0
+          example: 1200
+        currency:
+          type: string
+          example: EUR
+          description: Optional additive field.
+        price_euros:
+          type: number
+          format: double
+          minimum: 0
+          example: 12.0
+          description: Optional additive field.

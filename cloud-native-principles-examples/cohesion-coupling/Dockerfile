@@ -1,6 +1,12 @@
 FROM python:3.12-slim
 
-WORKDIR /app
-COPY *.py .
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "app.py"]
+WORKDIR /app
+
+COPY app.py .
+COPY cohesion ./cohesion
+COPY coupling ./coupling
+
+CMD ["python", "app.py", "all"]

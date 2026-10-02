@@ -12,7 +12,7 @@ objectives, prerequisites, execution instructions, and observations.
 | Directory | Topics |
 |---|---|
 | [`cloud-native-examples/`](cloud-native-examples/) | Docker fundamentals, Twelve-Factor principles, deployment strategies, service models, and monitoring |
-| [`cloud-native-principles-examples/`](cloud-native-principles-examples/) | API-first, persistence, failure isolation, single-concern containers, high observability, container constraints, cohesion and coupling, and SOLID principles |
+| [`cloud-native-principles-examples/`](cloud-native-principles-examples/) | API-first, consumer-first design, persistence, failure isolation, single-concern containers, high observability, container constraints, cohesion/coupling levels, and SOLID principles |
 
 Additional examples may be added as the course progresses.
 
