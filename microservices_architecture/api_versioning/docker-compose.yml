@@ -1,0 +1,16 @@
+services:
+  order-v1:
+    build: ./order-v1
+
+  order-v2:
+    build: ./order-v2
+
+  api-gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "8083:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - order-v1
+      - order-v2

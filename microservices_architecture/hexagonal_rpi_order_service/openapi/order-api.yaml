@@ -1,0 +1,72 @@
+openapi: 3.0.3
+info:
+  title: Order Service API
+  version: 1.0.0
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      summary: Create an order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+  /orders/{orderId}:
+    get:
+      operationId: getOrder
+      summary: Get an order
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Order found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: Order not found
+components:
+  schemas:
+    CreateOrderRequest:
+      type: object
+      required: [restaurantId, total]
+      properties:
+        restaurantId:
+          type: integer
+          example: 42
+        total:
+          type: number
+          format: double
+          minimum: 0
+          example: 25.50
+    Order:
+      type: object
+      required: [id, restaurantId, status, total]
+      properties:
+        id:
+          type: integer
+          example: 1
+        restaurantId:
+          type: integer
+          example: 42
+        status:
+          type: string
+          example: CREATED
+        total:
+          type: number
+          format: double
+          example: 25.50

@@ -14,7 +14,7 @@ set of architectural concepts and includes instructions for local experimentatio
 | [`LocalStack/`](LocalStack/) | Local AWS emulation with LocalStack; introductory Docker Compose example for experimenting with cloud services without using a real AWS account |
 | [`cloud-native-examples/`](cloud-native-examples/) | Docker fundamentals, Twelve-Factor principles, deployment strategies, service models, and monitoring |
 | [`cloud-native-principles-examples/`](cloud-native-principles-examples/) | API-first, consumer-first design, persistence, failure isolation, single-concern containers, high observability, container constraints, cohesion/coupling levels, and SOLID principles |
-| [`microservices_architecture/`](microservices_architecture/) | Microservice decomposition and service-boundary design, including decomposition by business capability and by DDD subdomain / bounded context |
+| [`microservices_architecture/`](microservices_architecture/) | Microservice decomposition and service-boundary design; DDD; API evolution and versioning; synchronous REST RPI; Hexagonal Architecture; FastAPI/PostgreSQL adapters; OpenAPI, Swagger UI, and Swagger Codegen |
 
 Additional examples may be added as the course progresses.
 
