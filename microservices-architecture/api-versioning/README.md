@@ -84,7 +84,7 @@ The concrete semantic version is returned in the `X-API-Version` response header
 ## Project structure
 
 ```text
-api_versioning/
+api-versioning/
 ├── README.md
 ├── docker-compose.yml
 ├── gateway/

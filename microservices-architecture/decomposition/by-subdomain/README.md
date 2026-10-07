@@ -86,8 +86,8 @@ curl -s http://localhost:8082/couriers/1
 
 The functional requirements are unchanged. What changes is the reasoning used to define the boundary:
 
-- `by_capability/` groups both supplier types under **Supplier Management**;
-- `by_subdomain/` separates the **Restaurant** and **Courier** models.
+- `by-capability/` groups both supplier types under **Supplier Management**;
+- `by-subdomain/` separates the **Restaurant** and **Courier** models.
 
 ## Clean up
 

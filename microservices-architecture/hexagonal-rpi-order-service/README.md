@@ -57,7 +57,7 @@ The dependency direction is **outside → inside**:
 ## Project structure
 
 ```text
-hexagonal_rpi_order_service/
+hexagonal-rpi-order-service/
 ├── openapi/
 │   └── order-api.yaml
 ├── app/

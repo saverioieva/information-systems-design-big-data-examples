@@ -28,8 +28,8 @@ After completing this block, students should be able to:
 | Step | Example | Main idea |
 |---:|---|---|
 | 1 | [`decomposition/`](decomposition/) | Compare decomposition by business capability with decomposition by subdomain using the same FTGO supplier-management scenario |
-| 2 | [`api_versioning/`](api_versioning/) | Evolve an FTGO Order API, keep v1 and v2 available together, and relate contract compatibility to rolling and blue-green deployments |
-| 3 | [`hexagonal_rpi_order_service/`](hexagonal_rpi_order_service/) | Implement an Order Service with Hexagonal Architecture, synchronous REST RPI, FastAPI, PostgreSQL, OpenAPI, Swagger UI, and Swagger Codegen |
+| 2 | [`api-versioning/`](api-versioning/) | Evolve an FTGO Order API, keep v1 and v2 available together, and relate contract compatibility to rolling and blue-green deployments |
+| 3 | [`hexagonal-rpi-order-service/`](hexagonal-rpi-order-service/) | Implement an Order Service with Hexagonal Architecture, synchronous REST RPI, FastAPI, PostgreSQL, OpenAPI, Swagger UI, and Swagger Codegen |
 
 ## Requirements
 
@@ -50,20 +50,20 @@ docker compose version
 Start from:
 
 ```bash
-cd microservices_architecture/decomposition
+cd microservices-architecture/decomposition
 ```
 
 Read [`scenario.md`](decomposition/scenario.md) first, then run the two implementations separately:
 
 ```bash
-cd by_capability
+cd by-capability
 # follow README.md
 ```
 
 and:
 
 ```bash
-cd ../by_subdomain
+cd ../by-subdomain
 # follow README.md
 ```
 
@@ -74,10 +74,10 @@ The same FTGO requirements are intentionally implemented with different service-
 Start from:
 
 ```bash
-cd microservices_architecture/api_versioning
+cd microservices-architecture/api-versioning
 ```
 
-Then follow [`api_versioning/README.md`](api_versioning/README.md).
+Then follow [`api-versioning/README.md`](api-versioning/README.md).
 
 The lab exposes an FTGO Order API through an API Gateway:
 
@@ -95,10 +95,10 @@ The README also connects API compatibility with the existing **rolling** and **b
 Start from:
 
 ```bash
-cd microservices_architecture/hexagonal_rpi_order_service
+cd microservices-architecture/hexagonal-rpi-order-service
 ```
 
-Then follow [`hexagonal_rpi_order_service/README.md`](hexagonal_rpi_order_service/README.md).
+Then follow [`hexagonal-rpi-order-service/README.md`](hexagonal-rpi-order-service/README.md).
 
 This lab follows one request end-to-end:
 

@@ -27,7 +27,7 @@ Supplier Management
    └─ couriers
 ```
 
-Run [`by_capability/`](by_capability/) and observe that all four operations are exposed by a single deployable service.
+Run [`by-capability/`](by-capability/) and observe that all four operations are exposed by a single deployable service.
 
 ## B. Decompose by subdomain / bounded context
 
@@ -38,7 +38,7 @@ Restaurant subdomain  →  Restaurant Service
 Courier subdomain     →  Courier Service
 ```
 
-Run [`by_subdomain/`](by_subdomain/) and observe that the same four requirements are now implemented by two independently deployable services with separate models.
+Run [`by-subdomain/`](by-subdomain/) and observe that the same four requirements are now implemented by two independently deployable services with separate models.
 
 ## Compare the decisions
 

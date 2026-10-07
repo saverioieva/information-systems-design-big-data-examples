@@ -14,7 +14,7 @@ set of architectural concepts and includes instructions for local experimentatio
 | [`LocalStack/`](LocalStack/) | Local AWS emulation with LocalStack; introductory Docker Compose example for experimenting with cloud services without using a real AWS account |
 | [`cloud-native-examples/`](cloud-native-examples/) | Docker fundamentals, Twelve-Factor principles, deployment strategies, service models, and monitoring |
 | [`cloud-native-principles-examples/`](cloud-native-principles-examples/) | API-first, consumer-first design, persistence, failure isolation, single-concern containers, high observability, container constraints, cohesion/coupling levels, and SOLID principles |
-| [`microservices_architecture/`](microservices_architecture/) | Microservice decomposition and service-boundary design; DDD; API evolution and versioning; synchronous REST RPI; Hexagonal Architecture; FastAPI/PostgreSQL adapters; OpenAPI, Swagger UI, and Swagger Codegen |
+| [`microservices-architecture/`](microservices-architecture/) | Microservice decomposition and service-boundary design; DDD; API evolution and versioning; synchronous REST RPI; Hexagonal Architecture; FastAPI/PostgreSQL adapters; OpenAPI, Swagger UI, and Swagger Codegen |
 
 Additional examples may be added as the course progresses.
 
@@ -32,7 +32,7 @@ Then open the course block you want to study:
 - [`LocalStack/LocalStackIntro/`](LocalStack/LocalStackIntro/)
 - [`cloud-native-examples/README.md`](cloud-native-examples/README.md)
 - [`cloud-native-principles-examples/README.md`](cloud-native-principles-examples/README.md)
-- [`microservices_architecture/README.md`](microservices_architecture/README.md)
+- [`microservices-architecture/README.md`](microservices-architecture/README.md)
 
 The block-level README files contain the recommended sequence, requirements,
 and commands for running their examples.
