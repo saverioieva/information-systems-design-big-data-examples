@@ -42,7 +42,7 @@ Show everything:
 docker compose run --rm demo python app.py all
 ```
 
-You can also run one level at a time. This is useful during a lecture:
+You can also run one level at a time. 
 
 ```bash
 docker compose run --rm demo python app.py cohesion sequential

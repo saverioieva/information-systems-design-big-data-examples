@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package ftgo.order.v1;
+
+service OrderService {
+  // Unary RPC: one request -> one response.
+  rpc CreateOrder(CreateOrderRequest) returns (OrderReply);
+
+  // Server streaming: one request -> many responses.
+  rpc WatchOrder(WatchOrderRequest) returns (stream OrderUpdate);
+
+  // Client streaming: many requests -> one response.
+  rpc BulkCreateOrders(stream CreateOrderRequest) returns (BulkCreateReply);
+
+  // Bidirectional streaming: both sides exchange streams independently.
+  rpc OrderConversation(stream OrderCommand) returns (stream OrderEvent);
+}
+
+message CreateOrderRequest {
+  string restaurant_id = 1;
+  string item = 2;
+  int32 quantity = 3;
+}
+
+message OrderReply {
+  string order_id = 1;
+  string restaurant_id = 2;
+  string item = 3;
+  int32 quantity = 4;
+  OrderStatus status = 5;
+}
+
+message WatchOrderRequest {
+  string order_id = 1;
+}
+
+message OrderUpdate {
+  string order_id = 1;
+  OrderStatus status = 2;
+}
+
+message BulkCreateReply {
+  int32 created = 1;
+  repeated string order_ids = 2;
+}
+
+message OrderCommand {
+  string order_id = 1;
+  string action = 2;
+}
+
+message OrderEvent {
+  string order_id = 1;
+  string message = 2;
+}
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  CREATED = 1;
+  ACCEPTED = 2;
+  PREPARING = 3;
+  READY = 4;
+}

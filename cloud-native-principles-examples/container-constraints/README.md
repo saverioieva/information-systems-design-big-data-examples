@@ -2,13 +2,19 @@
 
 ## Goal
 
-Inspect container runtime limits and observe graceful shutdown when Docker sends
-`SIGTERM`.
+Inspect container runtime constraints and observe how a container reacts to
+lifecycle signals such as `SIGTERM`.
 
-The example uses a non-root user, a read-only filesystem, dropped capabilities,
-and explicit CPU, memory, and PID limits.
+The example demonstrates:
 
-## 1. Start the container
+- running the application as a **non-root user**;
+- using a **read-only root filesystem**;
+- allowing writes only in explicitly writable locations such as `/tmp`;
+- dropping unnecessary Linux capabilities;
+- defining explicit **CPU, memory, and PID limits**;
+- handling graceful shutdown.
+
+## 1. Start the container and inspect security constraints
 
 ```bash
 cd container-constraints
@@ -17,16 +23,57 @@ docker compose up -d --build
 curl -s http://localhost:8080/
 ```
 
-Inspect the runtime identity and filesystem:
+The container is configured with restricted privileges and filesystem access.
+
+### Check the runtime user
 
 ```bash
 docker compose exec app id
+```
+
+The application should run as a **non-root user** rather than as `root`.
+
+This reduces the privileges available to the process if the application is
+compromised.
+
+### Verify that the application filesystem is read-only
+
+```bash
 docker compose exec app sh -c 'echo x > /app/test.txt'
+```
+
+This command should fail because the container root filesystem is configured as
+**read-only**.
+
+The application therefore cannot modify its own code or create arbitrary files
+under `/app` at runtime.
+
+### Verify that temporary storage is writable
+
+```bash
 docker compose exec app sh -c 'echo x > /tmp/test.txt && cat /tmp/test.txt'
 ```
 
-Writing under `/app` fails because the root filesystem is read-only. `/tmp` is
-available through a temporary filesystem.
+This command should succeed and print:
+
+```text
+x
+```
+
+Although the root filesystem is read-only, `/tmp` is explicitly provided as a
+temporary writable filesystem.
+
+The resulting confinement model is:
+
+```text
+Application process  -> non-root user
+
+/app                 -> read-only
+/tmp                 -> writable temporary storage
+```
+
+This follows the **least privilege** principle: the container receives only the
+permissions and writable storage that it actually needs.
 
 ## 2. Change configuration without rebuilding the image
 
@@ -36,7 +83,10 @@ docker compose up -d --force-recreate app
 curl -s http://localhost:8080/
 ```
 
-The same image runs with a different environment value.
+The same container image now runs with a different environment value.
+
+This shows that runtime configuration can change independently from the
+container image.
 
 ## 3. Observe graceful shutdown
 
@@ -54,35 +104,109 @@ docker compose stop app
 docker compose logs --tail=10 app
 ```
 
-The application receives `SIGTERM`, lets the current request finish, and then
-shuts down.
+Docker first sends `SIGTERM`.
 
-Compare it with a shorter grace period:
+The application handles the signal, allows the current request to finish, and
+then shuts down gracefully.
+
+Compare this with a shorter grace period:
 
 ```bash
 docker compose start app
-# Start /slow again in terminal A, then run:
+```
+
+Start `/slow` again in terminal A, then run:
+
+```bash
 docker compose stop -t 1 app
 ```
 
-Docker may send `SIGKILL` before the slow request can finish.
+If the application does not terminate within the one-second grace period,
+Docker may forcefully terminate it with `SIGKILL`.
+
+Conceptually:
+
+```text
+docker stop
+    |
+    v
+ SIGTERM
+    |
+    | grace period
+    v
+application exits?
+    |
+   yes -> graceful shutdown
+    |
+    no
+    v
+ SIGKILL
+```
 
 ## 4. Inspect resource limits
 
 ```bash
 docker compose start app
+
 docker inspect "$(docker compose ps -q app)" \
   --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}'
+
 docker stats --no-stream
 ```
 
-The configured limits are 128 MiB memory, 0.5 CPU, and 64 PIDs.
+The configured limits are:
+
+```text
+Memory -> 128 MiB
+CPU    -> 0.5 CPU
+PIDs   -> 64
+```
+
+Docker internally represents CPU limits using `NanoCpus`.
+
+For example:
+
+```text
+0.5 CPU = 500000000 NanoCpus
+```
+
+CPU and memory constraints behave differently.
+
+If the CPU limit is reached:
+
+```text
+CPU limit reached
+    |
+    v
+CPU throttling
+    |
+    v
+application becomes slower
+```
+
+If the memory limit is exceeded:
+
+```text
+Memory limit exceeded
+    |
+    v
+OOM condition
+    |
+    v
+process terminated
+    |
+    v
+SIGKILL / exit code 137
+```
 
 ## What to observe
 
+- The application runs as a **non-root user**.
+- The normal container filesystem is **read-only**.
+- Only explicitly configured paths such as `/tmp` are writable.
 - Containers should react correctly to lifecycle signals.
-- Graceful shutdown requires enough time for in-flight work.
-- Runtime resource and security constraints should be explicit.
+- Graceful shutdown requires enough time for in-flight work to complete.
+- CPU, memory, PID, filesystem, and privilege constraints should be explicit.
 
 ## Clean up
 

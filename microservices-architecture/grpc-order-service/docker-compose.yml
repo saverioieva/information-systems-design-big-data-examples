@@ -1,0 +1,30 @@
+services:
+  order-service:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    environment:
+      GRPC_PORT: "50051"
+    ports:
+      - "50051:50051"
+
+  api-service:
+    build:
+      context: .
+      dockerfile: api-service/Dockerfile
+    environment:
+      ORDER_GRPC_TARGET: order-service:50051
+    depends_on:
+      - order-service
+    ports:
+      - "8000:8000"
+
+  grpc-client:
+    build:
+      context: .
+      dockerfile: demo-clients/Dockerfile
+    environment:
+      ORDER_GRPC_TARGET: order-service:50051
+    depends_on:
+      - order-service
+    profiles: ["tools"]

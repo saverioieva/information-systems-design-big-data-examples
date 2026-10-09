@@ -18,7 +18,7 @@ def index():
 @app.route("/slow")
 def slow():
     print("work_started", flush=True)
-    time.sleep(4)
+    time.sleep(8)
     print("work_finished", flush=True)
     return {"completed": True}
 
