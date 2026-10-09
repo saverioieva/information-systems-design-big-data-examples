@@ -31,7 +31,7 @@ External client
 +---------------------------------------+
 | Internal Order Service                |
 |                                       |
-| gRPC adapter (generated interface)    |
+| gRPC adapter                         |
 |             |                         |
 |             v                         |
 |       OrderUseCases                   |
@@ -254,7 +254,7 @@ The generated gRPC base class is implemented by:
 order-service/app/adapters/inbound/grpc/server.py
 ```
 
-`GrpcOrderAdapter` translates Protocol Buffer messages into calls to the application core:
+`GrpcOrderAdapter` translates Protocol Buffer messages into calls to the **inbound port**. It depends on the `OrderUseCases` abstraction, not on the concrete application service:
 
 ```text
 GrpcOrderAdapter
@@ -272,9 +272,63 @@ OrderRepository        outbound port
 InMemoryOrderRepository
 ```
 
-The application service knows nothing about gRPC, HTTP/2, Protocol Buffers, or FastAPI.
+The dependency direction is deliberately explicit:
 
-## 6. Four gRPC interaction models
+- `GrpcOrderAdapter` depends on the `OrderUseCases` **inbound port**;
+- `OrderApplicationService` **implements** `OrderUseCases`;
+- `OrderApplicationService` depends on the `OrderRepository` **outbound port**;
+- `InMemoryOrderRepository` **implements** `OrderRepository`;
+- `main.py` is the composition root that wires concrete adapters to the core.
+
+The application service therefore knows nothing about gRPC, HTTP/2, Protocol Buffers, FastAPI, or the concrete repository implementation.
+
+## 6. Inspect the ports and adapters
+
+The ports are explicit Python abstractions (`ABC` + `@abstractmethod`), so the architectural dependency can be seen directly in the code.
+
+### Inbound port
+
+```python
+class OrderUseCases(ABC):
+    @abstractmethod
+    def create_order(self, restaurant_id: str, item: str, quantity: int) -> Order:
+        ...
+```
+
+The application core implements that port:
+
+```python
+class OrderApplicationService(OrderUseCases):
+    ...
+```
+
+The gRPC adapter depends only on the port:
+
+```python
+class GrpcOrderAdapter(order_pb2_grpc.OrderServiceServicer):
+    def __init__(self, use_cases: OrderUseCases):
+        self._use_cases = use_cases
+```
+
+### Outbound port
+
+```python
+class OrderRepository(ABC):
+    @abstractmethod
+    def save(self, order: Order) -> Order:
+        ...
+```
+
+The application core depends on this abstraction, while the adapter implements it:
+
+```python
+class InMemoryOrderRepository(OrderRepository):
+    ...
+```
+
+This is the key Ports & Adapters rule: **adapters depend on ports; the core does not depend on transport or infrastructure technologies**.
+
+## 7. Four gRPC interaction models
 
 The examples below call the **internal service directly** so the interaction pattern is easy to observe.
 
@@ -347,7 +401,7 @@ rpc OrderConversation(stream OrderCommand) returns (stream OrderEvent);
 
 The client and server can independently exchange messages on the same HTTP/2 stream.
 
-## 7. REST vs gRPC in this example
+## 8. REST vs gRPC in this example
 
 | Concern | External REST API | Internal gRPC API |
 |---|---|---|
@@ -361,7 +415,7 @@ The client and server can independently exchange messages on the same HTTP/2 str
 
 The important point is not that one protocol is universally better. The communication boundary determines the best trade-off.
 
-## 8. Optional: inspect the gRPC API with reflection
+## 9. Optional: inspect the gRPC API with reflection
 
 The server enables gRPC reflection, so a tool such as `grpcurl` can inspect the service:
 
@@ -379,7 +433,7 @@ grpcurl -plaintext \
   ftgo.order.v1.OrderService/CreateOrder
 ```
 
-## 9. Test the application core without gRPC
+## 10. Test the application core without gRPC
 
 The core can be tested independently of transport technology:
 
@@ -402,6 +456,6 @@ docker compose down -v
 1. `order.proto` is the contract used by both sides of the internal call.
 2. `grpcio-tools` generates transport plumbing, not application behavior.
 3. FastAPI exposes a REST-friendly boundary while internally using a generated gRPC stub.
-4. The gRPC server is an inbound adapter around the application core.
+4. The gRPC server is an inbound adapter that depends on the `OrderUseCases` port, not on the concrete application service.
 5. The four RPC styles are differences in the communication model, not changes to the domain model.
 6. REST and gRPC can coexist naturally in the same microservice system.

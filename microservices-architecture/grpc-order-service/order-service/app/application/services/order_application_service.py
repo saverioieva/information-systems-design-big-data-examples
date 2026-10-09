@@ -1,13 +1,14 @@
 from uuid import uuid4
 
+from app.application.ports.inbound.order_use_cases import OrderUseCases
 from app.application.ports.outbound.order_repository import OrderRepository
 from app.domain.order import Order
 
 
-class OrderApplicationService:
-    """Application core: contains use-case orchestration, not transport logic."""
+class OrderApplicationService(OrderUseCases):
+    """Application core: implements the inbound port and depends only on ports/domain."""
 
-    def __init__(self, repository: OrderRepository):
+    def __init__(self, repository: OrderRepository) -> None:
         self._repository = repository
 
     def create_order(self, restaurant_id: str, item: str, quantity: int) -> Order:

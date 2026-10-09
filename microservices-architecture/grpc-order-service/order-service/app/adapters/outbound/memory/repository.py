@@ -1,10 +1,11 @@
+from app.application.ports.outbound.order_repository import OrderRepository
 from app.domain.order import Order
 
 
-class InMemoryOrderRepository:
-    """Simple outbound adapter used to keep the gRPC example focused."""
+class InMemoryOrderRepository(OrderRepository):
+    """Outbound adapter: implements the repository port in memory."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._orders: dict[str, Order] = {}
 
     def save(self, order: Order) -> Order:

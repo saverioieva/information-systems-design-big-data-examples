@@ -7,7 +7,7 @@ from grpc_reflection.v1alpha import reflection
 
 import order_pb2
 import order_pb2_grpc
-from app.application.services.order_application_service import OrderApplicationService
+from app.application.ports.inbound.order_use_cases import OrderUseCases
 from app.domain.order import Order, OrderStatus
 
 
@@ -22,7 +22,7 @@ STATUS_TO_PROTO = {
 class GrpcOrderAdapter(order_pb2_grpc.OrderServiceServicer):
     """Inbound adapter: translates gRPC messages to application use cases."""
 
-    def __init__(self, use_cases: OrderApplicationService):
+    def __init__(self, use_cases: OrderUseCases):
         self._use_cases = use_cases
 
     @staticmethod
@@ -89,7 +89,7 @@ class GrpcOrderAdapter(order_pb2_grpc.OrderServiceServicer):
             )
 
 
-def serve(use_cases: OrderApplicationService) -> None:
+def serve(use_cases: OrderUseCases) -> None:
     port = os.getenv("GRPC_PORT", "50051")
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     order_pb2_grpc.add_OrderServiceServicer_to_server(GrpcOrderAdapter(use_cases), server)
