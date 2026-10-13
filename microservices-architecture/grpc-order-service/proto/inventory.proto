@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package ftgo.inventory.v1;
+
+service InventoryService {
+  // Unary RPC: one request -> one response.
+  rpc CheckAvailability(CheckAvailabilityRequest) returns (AvailabilityReply);
+
+  // Server streaming: one request -> many responses.
+  rpc WatchStock(WatchStockRequest) returns (stream StockUpdate);
+
+  // Client streaming: many requests -> one response.
+  rpc CheckMany(stream CheckAvailabilityRequest) returns (BatchAvailabilityReply);
+
+  // Bidirectional streaming: both sides exchange streams independently.
+  rpc InventorySession(stream InventoryCommand) returns (stream InventoryEvent);
+}
+
+message CheckAvailabilityRequest {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message AvailabilityReply {
+  string sku = 1;
+  int32 requested_quantity = 2;
+  int32 available_quantity = 3;
+  bool available = 4;
+}
+
+message WatchStockRequest {
+  string sku = 1;
+}
+
+message StockUpdate {
+  string sku = 1;
+  int32 available_quantity = 2;
+}
+
+message BatchAvailabilityReply {
+  int32 checked = 1;
+  int32 available_count = 2;
+  repeated AvailabilityReply results = 3;
+}
+
+message InventoryCommand {
+  string sku = 1;
+  string action = 2;
+  int32 quantity = 3;
+}
+
+message InventoryEvent {
+  string sku = 1;
+  string message = 2;
+  int32 available_quantity = 3;
+}

@@ -1,0 +1,138 @@
+services:
+  inventory-service:
+    build:
+      context: .
+      dockerfile: inventory-service/Dockerfile
+    environment:
+      GRPC_PORT: "50051"
+      REST_PORT: "8081"
+    ports:
+      - "50051:50051"
+      - "8081:8081"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8081/health', timeout=2)
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  checkout-grpc:
+    build:
+      context: .
+      dockerfile: checkout-service/Dockerfile
+    environment:
+      INVENTORY_PROTOCOL: grpc
+      INVENTORY_GRPC_TARGET: inventory-service:50051
+    depends_on:
+      inventory-service:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  checkout-rest:
+    build:
+      context: .
+      dockerfile: checkout-service/Dockerfile
+    environment:
+      INVENTORY_PROTOCOL: rest
+      INVENTORY_REST_BASE_URL: http://inventory-service:8081
+    depends_on:
+      inventory-service:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      checkout-grpc:
+        condition: service_healthy
+      checkout-rest:
+        condition: service_healthy
+    ports:
+      - "9090:9090"
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    profiles: ["tools"]
+
+  grpc-client:
+    build:
+      context: .
+      dockerfile: demo-clients/Dockerfile
+    environment:
+      INVENTORY_GRPC_TARGET: inventory-service:50051
+    depends_on:
+      inventory-service:
+        condition: service_healthy
+      checkout-grpc:
+        condition: service_healthy
+      checkout-rest:
+        condition: service_healthy
+    profiles: ["tools"]
+
+  grpc-codegen:
+    build:
+      context: .
+      dockerfile: tools/grpc-codegen.Dockerfile
+    profiles: ["codegen"]
+    volumes:
+      - ./proto:/workspace/proto:ro
+      - ./generated:/workspace/generated
+    command:
+      - python
+      - -m
+      - grpc_tools.protoc
+      - -I/workspace/proto
+      - --python_out=/workspace/generated
+      - --grpc_python_out=/workspace/generated
+      - /workspace/proto/inventory.proto
+
+  grpc-sniffer:
+    image: parrotsec/tshark:latest
+    network_mode: "service:inventory-service"
+    depends_on:
+      inventory-service:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    profiles: ["tools"]
+    command:
+      - -i
+      - any
+      - -f
+      - tcp port 50051 or tcp port 8081
+      - -d
+      - tcp.port==50051,http2
+      - -Y
+      - http or http2.type == 0
+      - -V
+      - -x

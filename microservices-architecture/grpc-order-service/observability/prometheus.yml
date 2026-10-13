@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 2s
+
+scrape_configs:
+  - job_name: checkout-grpc
+    static_configs:
+      - targets: ["checkout-grpc:8000"]
+
+  - job_name: checkout-rest
+    static_configs:
+      - targets: ["checkout-rest:8000"]

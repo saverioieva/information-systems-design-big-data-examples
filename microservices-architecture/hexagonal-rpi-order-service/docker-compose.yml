@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+    volumes:
+      - order_db:/var/lib/postgresql/data
+
+  db-init:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    command:
+      - python
+      - -c
+      - from order_service.infrastructure.database import create_schema; create_schema()
+    environment:
+      DATABASE_URL: postgresql+psycopg://orders:orders@postgres:5432/orders
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  order-fastapi:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    command: ["uvicorn", "order_service.main_fastapi:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://orders:orders@postgres:5432/orders
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+  order-flask:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    command: ["python", "-m", "flask", "--app", "order_service.main_flask:app", "run", "--host=0.0.0.0", "--port=5000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://orders:orders@postgres:5432/orders
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    ports:
+      - "5000:5000"
+
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.17.14
+    environment:
+      SWAGGER_JSON: /spec/order-api.yaml
+    volumes:
+      - ./openapi:/spec:ro
+    ports:
+      - "8080:8080"
+
+  openapi-server-generator:
+    image: openapitools/openapi-generator-cli:v7.26.0
+    profiles: ["codegen"]
+    volumes:
+      - ./openapi:/local/openapi:ro
+      - ./generated:/local/generated
+    command:
+      - generate
+      - -i
+      - /local/openapi/order-api.yaml
+      - -g
+      - python-fastapi
+      - -o
+      - /local/generated/openapi-fastapi-server
+
+volumes:
+  order_db:

@@ -43,3 +43,7 @@ Thumbs.db
 *.zip
 *.tar
 *.tar.gz
+
+# LocalStack runtime data
+LocalStack/LocalStackIntro/volume/*
+!LocalStack/LocalStackIntro/volume/.gitkeep
