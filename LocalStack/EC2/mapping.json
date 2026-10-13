@@ -1,0 +1,6 @@
+[{
+  "DeviceName": "/ebs-dev/sda1",
+  "Ebs": {
+    "VolumeSize": 10
+  }
+}]
