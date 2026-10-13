@@ -6,6 +6,15 @@ Use the **same functional requirements** to compare two service-decomposition st
 
 The scenario is documented in [`scenario.md`](scenario.md).
 
+
+## Scope and implementation note
+
+This lab focuses on **service decomposition and boundary design**, not on the internal architecture of each service. The implementations therefore intentionally do **not** apply Hexagonal Architecture. Ports and adapters are introduced separately in [`../hexagonal-rpi-order-service/`](../hexagonal-rpi-order-service/).
+
+The runnable services use FastAPI, so the code contains small Pydantic `BaseModel` classes such as request payload models. Here Pydantic is used only at the **HTTP boundary** to parse and validate JSON input. Those classes are not the domain model and they do not determine the service boundaries.
+
+The important design question in this lab is **which responsibilities belong together in the same service**, not how a service is structured internally.
+
 ## The common requirements
 
 We model a small part of FTGO supplier management:

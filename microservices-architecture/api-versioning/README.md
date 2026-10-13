@@ -102,6 +102,25 @@ api-versioning/
     └── client_v2.py
 ```
 
+
+## Why Pydantic appears in this example
+
+The v1 and v2 services are implemented with FastAPI and use Pydantic models such as `OrderV1`, `OrderV2`, `Money`, and `Delivery`. In this lab those classes describe the **published HTTP response schemas**. FastAPI uses them through `response_model` to validate/serialize responses and to generate the corresponding OpenAPI schema.
+
+```text
+implementation data
+      ↓
+Pydantic API schema
+      ↓
+JSON response
+      ↓
+consumer
+```
+
+Here Pydantic is useful because the lesson is specifically about **contract shape and compatibility**. These classes should not be interpreted as domain entities or as an application-core architecture.
+
+> **Scope:** this example intentionally does not apply Hexagonal Architecture. API versioning concerns the **contract seen by consumers**; Ports and Adapters concern the **internal dependency structure** of a service and are introduced separately in [`../hexagonal-rpi-order-service/`](../hexagonal-rpi-order-service/).
+
 ## Run
 
 From this directory:
@@ -232,4 +251,4 @@ docker compose down -v
 
 ## Scope
 
-This example is intentionally minimal. Production API lifecycle management also involves deprecation policies, observability, authentication, documentation, schema governance, and a migration plan for retiring old versions.
+This example is intentionally minimal. Pydantic is used only to make the HTTP contract explicit; it is not intended as a domain-modeling pattern. Production API lifecycle management also involves deprecation policies, observability, authentication, documentation, schema governance, and a migration plan for retiring old versions.

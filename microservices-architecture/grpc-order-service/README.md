@@ -1,15 +1,23 @@
-# gRPC Order Service: REST Outside, gRPC Inside
+# gRPC Service Integration: REST Checkout Outside, gRPC Inventory Inside
 
-This example demonstrates the gRPC concepts used in the **Microservices Architecture** lectures with one small FTGO-inspired scenario:
+This lab demonstrates **gRPC service-to-service communication** with two different microservices and one realistic collaboration:
 
-- an **external API service** exposes REST/JSON to web and heterogeneous clients;
-- the API service calls an **internal Order Service** through gRPC;
-- the gRPC contract is defined once in `proto/order.proto`;
-- `grpcio-tools` generates client/server plumbing from that contract;
-- the internal service uses a small **Hexagonal Architecture**: the gRPC layer is an inbound adapter that invokes application use cases;
-- four small clients demonstrate **Unary**, **Server Streaming**, **Client Streaming**, and **Bidirectional Streaming** RPCs.
+- an external **Checkout Service** exposes REST/JSON through FastAPI;
+- Checkout needs stock information from a separate internal **Inventory Service**;
+- Checkout calls Inventory through **gRPC**;
+- the gRPC contract is defined once in `proto/inventory.proto`;
+- `grpcio-tools` generates the client stub and server-side interface **inside the Docker images**;
+- both services keep transport details outside their application cores through explicit ports and adapters;
+- Inventory also has an explicit `InventoryRepository` outbound port, implemented in this lab by an **in-memory adapter** rather than a real database;
+- the public REST flow demonstrates a **Unary gRPC** call internally;
+- **Postman** can call the internal gRPC endpoint directly to visualize Unary, Server Streaming, Client Streaming, and Bidirectional Streaming;
+- an optional **TShark container** can inspect the HTTP/2 frames and binary gRPC/Protocol Buffer payload without installing Wireshark on the host.
 
-The goal is to show why REST and gRPC are often **complementary**, not competing choices.
+The main teaching point is that REST and gRPC solve different boundary needs and can naturally coexist in the same system.
+
+> **Docker-first lab:** the classroom workflow does **not** require Python, `pip`, `protoc`, `grpcio-tools`, `grpcurl`, Wireshark, or TShark on the host machine. Docker builds the services, generates the Protocol Buffer Python code, and can run TShark in a diagnostic container. Postman Desktop is optional but recommended for graphical gRPC exploration.
+
+---
 
 ## Architecture
 
@@ -18,52 +26,152 @@ External client
       |
       | REST / JSON
       v
-+-----------------------+
-| Public API Service    |
-| FastAPI               |
-|                       |
-| generated gRPC client |
-+-----------+-----------+
-            |
-            | gRPC / HTTP/2
-            | Protocol Buffers
-            v
-+---------------------------------------+
-| Internal Order Service                |
-|                                       |
-| gRPC adapter                         |
-|             |                         |
-|             v                         |
-|       OrderUseCases                   |
-|       (inbound port)                  |
-|             |                         |
-|             v                         |
-|   OrderApplicationService             |
-|       (application core)              |
-|             |                         |
-|             v                         |
-|       OrderRepository                 |
-|       (outbound port)                 |
-|             |                         |
-|             v                         |
-|   InMemoryOrderRepository             |
-+---------------------------------------+
++------------------------------------------------------+
+| Checkout Service                                     |
+|                                                      |
+| FastAPI REST adapter                                 |
+|        |                                             |
+|        v                                             |
+| CheckoutUseCases              inbound port           |
+|        ^                                             |
+|        |                                             |
+| CheckoutApplicationService    application core       |
+|        |                                             |
+|        v                                             |
+| InventoryGateway              outbound port          |
+|        ^                                             |
+|        |                                             |
+| GrpcInventoryClient           outbound gRPC adapter  |
++--------|---------------------------------------------+
+         |
+         | generated InventoryServiceStub
+         | gRPC / HTTP/2 / Protocol Buffers
+         v
++------------------------------------------------------+
+| Inventory Service                                    |
+|                                                      |
+| GrpcInventoryAdapter          inbound gRPC adapter   |
+|        |                                             |
+|        v                                             |
+| InventoryUseCases             inbound port           |
+|        ^                                             |
+|        |                                             |
+| InventoryApplicationService   application core       |
+|        |                                             |
+|        v                                             |
+| InventoryRepository           outbound port          |
+|        ^                                             |
+|        |                                             |
+| InMemoryInventoryRepository   outbound adapter       |
++------------------------------------------------------+
 ```
 
-The public service intentionally uses **REST** because it is easy to consume from browsers and generic clients. The internal service uses **gRPC** because both sides are controlled services and can benefit from a strong contract, generated code, compact messages, HTTP/2, and streaming.
+This is intentionally **not** a REST proxy in front of the same service. Checkout and Inventory have different responsibilities:
+
+- **Checkout Service** handles the external checkout use case;
+- **Inventory Service** owns stock availability and stock operations.
+
+This makes the service-to-service role of gRPC explicit.
+
+### Persistence scope: why Inventory uses an in-memory repository
+
+The Inventory Service has a real **outbound port** and a real **outbound adapter**, but it intentionally does **not** use a real database in this lab:
+
+```text
+InventoryApplicationService
+        |
+        v
+InventoryRepository            outbound port
+        ^
+        |
+InMemoryInventoryRepository    outbound adapter
+```
+
+So the distinction is:
+
+| Element | Present in this lab? |
+|---|---|
+| `InventoryRepository` outbound port | Yes |
+| Concrete repository adapter | Yes |
+| Real database such as PostgreSQL | No |
+| Persistent storage across restarts | No |
+
+This is an intentional teaching choice. **Persistence is not the focus of this example**; the lab concentrates on the gRPC contract, generated stubs, service-to-service communication, Hexagonal Architecture boundaries, and the four RPC interaction models.
+
+The previous Hexagonal Architecture lab already demonstrates a real PostgreSQL persistence adapter. If this Inventory Service later needed durable storage, `InMemoryInventoryRepository` could be replaced by an adapter such as `PostgresInventoryRepository` without changing `InventoryApplicationService`, because the application core depends only on `InventoryRepository`.
+
+```text
+Current lab                           Possible extension
+
+InventoryRepository                  InventoryRepository
+        ^                                     ^
+        |                                     |
+InMemoryInventoryRepository          PostgresInventoryRepository
+                                              |
+                                              v
+                                          PostgreSQL
+```
+
+> **Teaching point:** the in-memory repository is not a shortcut around Hexagonal Architecture. It is one concrete outbound adapter behind the same repository port; only the persistence technology has been simplified to keep the gRPC concepts visible.
+
+---
+
+## Prerequisites
+
+For the main lab you only need:
+
+- **Docker** with Docker Compose;
+- **Postman Desktop** if you want the graphical gRPC demonstration.
+
+You do **not** need a local Python environment or Wireshark/TShark installation for the classroom workflow. Packet inspection is performed by an optional Docker container.
+
+### Install Postman Desktop
+
+Official download page:
+
+- <https://www.postman.com/downloads/>
+
+Common installation options:
+
+**macOS**
+
+```bash
+brew install --cask postman
+```
+
+**Linux**
+
+```bash
+sudo snap install postman
+```
+
+**Windows**
+
+Download and run the installer from the official Postman download page.
+
+For this lab, the **desktop app** is preferable because the gRPC service runs locally on `localhost:50051`.
+
+---
 
 ## Repository layout
 
 ```text
 grpc-order-service/
 ├── proto/
-│   └── order.proto
-├── api-service/
-│   ├── app/main.py
+│   └── inventory.proto
+├── checkout-service/
+│   ├── src/checkout_service/
+│   │   ├── domain/
+│   │   ├── application/
+│   │   │   ├── ports/
+│   │   │   └── services/
+│   │   └── adapters/
+│   │       ├── inbound/rest/
+│   │       └── outbound/grpc/
 │   ├── Dockerfile
 │   └── requirements.txt
-├── order-service/
-│   ├── app/
+├── inventory-service/
+│   ├── src/inventory_service/
 │   │   ├── domain/
 │   │   ├── application/
 │   │   │   ├── ports/
@@ -77,385 +185,842 @@ grpc-order-service/
 │   ├── unary.py
 │   ├── server_streaming.py
 │   ├── client_streaming.py
-│   ├── bidirectional.py
-│   └── rest_client.py
-├── scripts/generate_proto.sh
+│   └── bidirectional.py
 ├── tests/
 ├── docker-compose.yml
 └── Makefile
 ```
 
+Generated Protocol Buffer Python files are created during Docker image builds and are not part of the application core.
+
+---
+
 ## 1. Start from the `.proto` contract
 
-`proto/order.proto` is the source of truth for the internal API.
+`proto/inventory.proto` is the source of truth for the internal Inventory API.
 
 ```proto
-service OrderService {
-  rpc CreateOrder(CreateOrderRequest) returns (OrderReply);
-  rpc WatchOrder(WatchOrderRequest) returns (stream OrderUpdate);
-  rpc BulkCreateOrders(stream CreateOrderRequest) returns (BulkCreateReply);
-  rpc OrderConversation(stream OrderCommand) returns (stream OrderEvent);
+service InventoryService {
+  rpc CheckAvailability(CheckAvailabilityRequest) returns (AvailabilityReply);
+  rpc WatchStock(WatchStockRequest) returns (stream StockUpdate);
+  rpc CheckMany(stream CheckAvailabilityRequest) returns (BatchAvailabilityReply);
+  rpc InventorySession(stream InventoryCommand) returns (stream InventoryEvent);
 }
 ```
 
-It also defines the exchanged messages and their stable numeric tags:
+The same service contract demonstrates all four gRPC interaction models:
 
-```proto
-message CreateOrderRequest {
-  string restaurant_id = 1;
-  string item = 2;
-  int32 quantity = 3;
-}
-```
-
-The field numbers (`1`, `2`, `3`) are part of the wire contract. When evolving the schema, new fields should use new numbers and removed numbers should not be reused.
+| Interaction model | RPC | Shape |
+|---|---|---|
+| Unary | `CheckAvailability` | one request → one response |
+| Server Streaming | `WatchStock` | one request → many responses |
+| Client Streaming | `CheckMany` | many requests → one response |
+| Bidirectional Streaming | `InventorySession` | many requests ↔ many responses |
 
 ### Anatomy of a Protocol Buffer definition
 
-A minimal unary RPC combines a **service**, an **RPC operation**, and the request/response **message types**:
+A unary operation is defined by a service, an RPC, and request/response messages:
 
 ```proto
-service OrderService {
-  rpc CreateOrder(CreateOrderRequest) returns (OrderReply);
+service InventoryService {
+  rpc CheckAvailability(CheckAvailabilityRequest) returns (AvailabilityReply);
 }
 
-message CreateOrderRequest {
-  string restaurant_id = 1;
-  string item = 2;
-  int32 quantity = 3;
+message CheckAvailabilityRequest {
+  string sku = 1;
+  int32 quantity = 2;
 }
 ```
 
-Read it from the outside in:
+Read it as follows:
 
-- `service OrderService` declares the remotely accessible service.
-- `rpc CreateOrder(...) returns (...)` declares one remote operation and its input/output types.
-- `message` declares the serialized data exchanged between client and server.
-- `string`, `int32`, and the other scalar types make the contract strongly typed.
-- `= 1`, `= 2`, `= 3` are stable field numbers used on the wire; they identify fields independently of their names.
-- `stream` placed before a request or response type changes the RPC interaction model from unary to client, server, or bidirectional streaming.
+- `service InventoryService` declares the remotely accessible service;
+- `rpc CheckAvailability(...) returns (...)` declares one remote operation;
+- `message` declares the data exchanged between client and server;
+- `string` and `int32` make fields strongly typed;
+- `= 1` and `= 2` are stable numeric field tags used on the wire;
+- `stream` before a request or response type changes the interaction model.
 
-For example:
+For compatible schema evolution, new fields should use new numeric tags and removed field numbers should not be reused.
 
-```proto
-rpc WatchOrder(WatchOrderRequest) returns (stream OrderUpdate);
+---
+
+## 2. Code generation happens inside Docker
+
+There is **no required host-side code-generation step**.
+
+Both service Dockerfiles compile `proto/inventory.proto` while the images are built:
+
+```text
+inventory.proto
+      |
+      | grpc_tools.protoc inside Docker build
+      v
++-------------------------+
+| inventory_pb2.py        |  Protocol Buffer messages
+| inventory_pb2_grpc.py   |  client stub + server interface
++-------------------------+
 ```
 
-means **one request -> a stream of responses**, while:
-
-```proto
-rpc OrderConversation(stream OrderCommand) returns (stream OrderEvent);
-```
-
-means **bidirectional streaming**.
-
-## 2. Generate the Python gRPC code
-
-Install the tools locally if you want to inspect generated code without Docker:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-./scripts/generate_proto.sh
-```
-
-The command behind the script is:
+Conceptually, the compiler executes:
 
 ```bash
 python -m grpc_tools.protoc \
-  -I proto \
-  --python_out=generated \
-  --grpc_python_out=generated \
-  proto/order.proto
+  -I/app/proto \
+  --python_out=/app/generated \
+  --grpc_python_out=/app/generated \
+  /app/proto/inventory.proto
 ```
 
-### Understanding the generation command
+The important point is **what is generated**, not where the command is run:
 
-Read the command as a small compilation pipeline:
+- `inventory_pb2.py` contains Protocol Buffer message classes and serialization support;
+- `inventory_pb2_grpc.py` contains the generated client stub and server-side gRPC interface.
 
-- `python -m grpc_tools.protoc` runs the Protocol Buffer compiler distributed with `grpcio-tools`.
-- `-I proto` adds `proto/` to the import search path for `.proto` files.
-- `--python_out=generated` generates Python classes for Protocol Buffer **messages**.
-- `--grpc_python_out=generated` generates the gRPC **client stub** and **server-side service interface**.
-- `proto/order.proto` is the input contract.
+Generated files are **transport plumbing**. Business logic must not be added to them because they can be regenerated at any time.
 
-Conceptually:
+> The generated gRPC classes are not domain models and are not application ports.
+
+---
+
+## 3. Understand the two sides of the gRPC boundary
+
+This section is conceptual: **there is nothing to execute here**.
+
+A gRPC call has a client side and a server side. In Hexagonal Architecture they play different adapter roles.
+
+### Checkout: gRPC is an outbound adapter
+
+Checkout needs Inventory, but its application core should not depend on gRPC:
 
 ```text
-order.proto
-    |
-    +--> order_pb2.py       message classes / serialization
-    |
-    +--> order_pb2_grpc.py  client stub + server interface
+CheckoutApplicationService
+          |
+          v
+   InventoryGateway             outbound port
+          ^
+          |
+   GrpcInventoryClient          outbound adapter
+          |
+          v
+InventoryServiceStub            generated client
 ```
 
-This generates:
+The application core depends on an application-defined abstraction:
+
+```python
+class InventoryGateway(ABC):
+    @abstractmethod
+    def check_availability(self, sku: str, quantity: int) -> InventoryAvailability:
+        ...
+```
+
+The gRPC-specific adapter implements it:
+
+```python
+class GrpcInventoryClient(InventoryGateway):
+    ...
+```
+
+**The generated gRPC stub is not the application port.** `InventoryGateway` is the outbound port; `GrpcInventoryClient` is the adapter that uses the generated stub.
+
+### Inventory: gRPC is an inbound adapter
+
+On the server side:
 
 ```text
-order_pb2.py       # Protocol Buffer message classes
-order_pb2_grpc.py  # client stub + server-side service interface
+InventoryServiceServicer        generated server interface
+          |
+          v
+GrpcInventoryAdapter            inbound adapter
+          |
+          v
+InventoryUseCases               inbound port
+          ^
+          |
+InventoryApplicationService     application core
 ```
 
-Do **not** put business logic in the generated files. They can be regenerated at any time.
+The gRPC adapter invokes `InventoryUseCases`. The application service implements that inbound port.
 
-## 3. Run the two services
+Therefore the same gRPC connection is viewed differently by the two services:
+
+```text
+Checkout Service                       Inventory Service
+
+InventoryGateway                       InventoryUseCases
+      ^                                      ^
+      |                                      |
+GrpcInventoryClient   -- gRPC -->   GrpcInventoryAdapter
+   outbound adapter                     inbound adapter
+```
+
+---
+
+## 4. DTOs vs domain models
+
+Transport objects stay at the transport boundary.
+
+### REST boundary
+
+FastAPI uses **Pydantic** models to represent and validate HTTP request/response data.
+
+```text
+HTTP / JSON
+    |
+    v
+Pydantic DTO
+    |
+    v
+REST adapter
+    |
+    v
+CheckoutUseCases
+```
+
+Pydantic models belong to the **REST adapter**. They are not domain entities and are not part of the application core.
+
+### gRPC boundary
+
+At the gRPC boundary, generated **Protocol Buffer message classes** play a similar transport-level role:
+
+```text
+gRPC / Protobuf
+      |
+      v
+generated protobuf message
+      |
+      v
+gRPC adapter
+      |
+      v
+application port
+```
+
+The gRPC adapters translate between generated Protobuf messages and application/domain objects. The application core should not depend on generated transport types.
+
+```text
+Pydantic models       -> REST transport DTOs
+Protobuf messages     -> gRPC transport DTOs
+Domain objects/ports  -> application and domain layers
+```
+
+---
+
+## 5. Run the two services
+
+Start the stack:
 
 ```bash
 docker compose up --build -d
 ```
 
-Check them:
+Check it:
 
 ```bash
 docker compose ps
 ```
 
-The endpoints are:
+Available endpoints:
 
-- REST API: `http://localhost:8000`
-- FastAPI/Swagger UI: `http://localhost:8000/docs`
-- internal gRPC service: `localhost:50051`
+| Component | Address |
+|---|---|
+| Checkout REST API | `http://localhost:8000` |
+| FastAPI / Swagger UI | `http://localhost:8000/docs` |
+| Inventory gRPC API | `localhost:50051` |
 
-## 4. REST outside, gRPC inside
+Port `50051` is exposed to the host **only for this lab**, so that Postman can call the internal gRPC service directly. In a real deployment the Inventory gRPC endpoint could remain private to the service network.
 
-Create an order through the **public REST API**:
+---
+
+## 6. Main demo: REST outside, Unary gRPC inside
+
+The normal external consumer calls Checkout through REST.
 
 ```bash
-curl -X POST http://localhost:8000/orders \
+curl -X POST http://localhost:8000/checkouts \
   -H 'Content-Type: application/json' \
-  -d '{"restaurant_id":"rest-1","item":"pizza","quantity":2}'
+  -d '{"sku":"pizza","quantity":2}'
 ```
 
-Flow:
+Example response:
+
+```json
+{
+  "sku": "pizza",
+  "quantity": 2,
+  "availableQuantity": 8,
+  "status": "ACCEPTED"
+}
+```
+
+The important part is the internal collaboration:
 
 ```text
-curl
-  -> HTTP/JSON
-  -> FastAPI
-  -> generated OrderServiceStub
-  -> gRPC / HTTP/2 / Protocol Buffers
-  -> GrpcOrderAdapter
-  -> OrderApplicationService
+External client
+      |
+      | POST /checkouts + JSON
+      v
+FastAPI REST adapter
+      |
+      v
+CheckoutUseCases
+      |
+      v
+CheckoutApplicationService
+      |
+      v
+InventoryGateway
+      |
+      v
+GrpcInventoryClient
+      |
+      | Unary RPC: CheckAvailability(...)
+      | HTTP/2 + Protocol Buffers
+      v
+GrpcInventoryAdapter
+      |
+      v
+InventoryUseCases
+      |
+      v
+InventoryApplicationService
 ```
 
-The FastAPI service is therefore both:
-
-- a **REST server** for external clients;
-- a **gRPC client** of the internal Order Service.
-
-This makes the REST/gRPC trade-off concrete in one example.
-
-## 5. Hexagonal mapping of the internal service
-
-The generated gRPC base class is implemented by:
+This is the main integration scenario:
 
 ```text
-order-service/app/adapters/inbound/grpc/server.py
+REST external boundary
+        |
+        v
+Checkout Service
+        |
+        | Unary gRPC
+        v
+Inventory Service
 ```
 
-`GrpcOrderAdapter` translates Protocol Buffer messages into calls to the **inbound port**. It depends on the `OrderUseCases` abstraction, not on the concrete application service:
+The external client does not need to know that gRPC is used internally.
+
+---
+
+## 7. Test the REST API graphically with Postman
+
+The same Postman Desktop application can also be used as a normal HTTP client for the public Checkout REST API.
+
+This is useful in class because students can compare the **external REST boundary** and the **internal gRPC boundary** using the same graphical tool.
+
+### 7.1 Create a REST request
+
+With the Docker stack running, open Postman and create a new **HTTP** request.
+
+Set:
 
 ```text
-GrpcOrderAdapter
-       |
-       v
-OrderUseCases          inbound port
-       ^
-       |
-OrderApplicationService
-       |
-       v
-OrderRepository        outbound port
-       ^
-       |
-InMemoryOrderRepository
+Method: POST
+URL:    http://localhost:8000/checkouts
 ```
 
-The dependency direction is deliberately explicit:
+In **Headers**, use:
 
-- `GrpcOrderAdapter` depends on the `OrderUseCases` **inbound port**;
-- `OrderApplicationService` **implements** `OrderUseCases`;
-- `OrderApplicationService` depends on the `OrderRepository` **outbound port**;
-- `InMemoryOrderRepository` **implements** `OrderRepository`;
-- `main.py` is the composition root that wires concrete adapters to the core.
-
-The application service therefore knows nothing about gRPC, HTTP/2, Protocol Buffers, FastAPI, or the concrete repository implementation.
-
-## 6. Inspect the ports and adapters
-
-The ports are explicit Python abstractions (`ABC` + `@abstractmethod`), so the architectural dependency can be seen directly in the code.
-
-### Inbound port
-
-```python
-class OrderUseCases(ABC):
-    @abstractmethod
-    def create_order(self, restaurant_id: str, item: str, quantity: int) -> Order:
-        ...
+```text
+Content-Type: application/json
 ```
 
-The application core implements that port:
+In **Body → raw → JSON**, enter:
 
-```python
-class OrderApplicationService(OrderUseCases):
-    ...
+```json
+{
+  "sku": "pizza",
+  "quantity": 2
+}
 ```
 
-The gRPC adapter depends only on the port:
+Click **Send**.
 
-```python
-class GrpcOrderAdapter(order_pb2_grpc.OrderServiceServicer):
-    def __init__(self, use_cases: OrderUseCases):
-        self._use_cases = use_cases
+The Checkout Service should return `201 Created` with a response similar to:
+
+```json
+{
+  "sku": "pizza",
+  "quantity": 2,
+  "availableQuantity": 8,
+  "status": "ACCEPTED"
+}
 ```
 
-### Outbound port
+The interesting part is that this REST request triggers a **Unary gRPC call** internally:
 
-```python
-class OrderRepository(ABC):
-    @abstractmethod
-    def save(self, order: Order) -> Order:
-        ...
+```text
+Postman HTTP request
+        |
+        | POST /checkouts + JSON
+        v
+Checkout REST adapter
+        |
+        v
+CheckoutApplicationService
+        |
+        v
+GrpcInventoryClient
+        |
+        | CheckAvailability(...)
+        v
+Inventory gRPC Service
 ```
 
-The application core depends on this abstraction, while the adapter implements it:
+So Postman can be used in two different modes in the same lab:
 
-```python
-class InMemoryOrderRepository(OrderRepository):
-    ...
+```text
+Postman HTTP request
+    -> public REST API
+    -> http://localhost:8000/checkouts
+
+Postman gRPC request
+    -> internal gRPC API
+    -> localhost:50051
 ```
 
-This is the key Ports & Adapters rule: **adapters depend on ports; the core does not depend on transport or infrastructure technologies**.
+### 7.2 Optional health check
 
-## 7. Four gRPC interaction models
+You can also call:
 
-The examples below call the **internal service directly** so the interaction pattern is easy to observe.
+```text
+GET http://localhost:8000/health
+```
 
-### Unary: 1 request -> 1 response
+Expected response:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+This checks only the Checkout REST service. The `POST /checkouts` request is the more interesting demonstration because it exercises the complete **REST → Checkout → gRPC → Inventory** collaboration.
+
+---
+
+## 8. Explore gRPC graphically with Postman
+
+Postman is useful here because it lets you invoke the internal Inventory API directly and visualize the four gRPC interaction models without writing or running a client manually.
+
+### 8.1 Connect to the Inventory Service
+
+With the Docker stack running:
+
+1. Open **Postman Desktop**.
+2. Select **New → gRPC**.
+3. Enter the server URL:
+
+```text
+localhost:50051
+```
+
+4. Leave **TLS disabled** for this local lab.
+5. Select a method from `ftgo.inventory.v1.InventoryService`.
+
+The Inventory Service enables **gRPC server reflection**, so Postman should discover the service definition automatically.
+
+If needed, you can instead import:
+
+```text
+proto/inventory.proto
+```
+
+from the **Service definition** section.
+
+### 8.2 Unary — `CheckAvailability`
+
+Select:
+
+```text
+ftgo.inventory.v1.InventoryService / CheckAvailability
+```
+
+Message:
+
+```json
+{
+  "sku": "pizza",
+  "quantity": 2
+}
+```
+
+Click **Invoke**.
+
+Conceptually:
+
+```text
+request  -------------------->
+         CheckAvailability
+response <--------------------
+```
+
+This is the same gRPC interaction that Checkout uses internally during the REST demo.
+
+### 8.3 Server Streaming — `WatchStock`
+
+Select:
+
+```text
+ftgo.inventory.v1.InventoryService / WatchStock
+```
+
+Message:
+
+```json
+{
+  "sku": "pizza"
+}
+```
+
+Click **Invoke**.
+
+One request produces multiple server messages:
+
+```text
+request  -------------------->
+response <-------------------- stock update 1
+response <-------------------- stock update 2
+response <-------------------- stock update 3
+```
+
+Postman displays the received messages as a stream/timeline.
+
+### 8.4 Client Streaming — `CheckMany`
+
+Select:
+
+```text
+ftgo.inventory.v1.InventoryService / CheckMany
+```
+
+Click **Invoke** to open the stream, then send several messages using **Send**:
+
+```json
+{
+  "sku": "pizza",
+  "quantity": 2
+}
+```
+
+```json
+{
+  "sku": "pasta",
+  "quantity": 5
+}
+```
+
+```json
+{
+  "sku": "salad",
+  "quantity": 1
+}
+```
+
+Then click **End Streaming**.
+
+The server returns one final `BatchAvailabilityReply`.
+
+```text
+request  -------------------->
+request  -------------------->
+request  -------------------->
+         end stream
+response <-------------------- one batch reply
+```
+
+### 8.5 Bidirectional Streaming — `InventorySession`
+
+Select:
+
+```text
+ftgo.inventory.v1.InventoryService / InventorySession
+```
+
+Click **Invoke**, then send messages such as:
+
+```json
+{
+  "sku": "pizza",
+  "action": "check",
+  "quantity": 1
+}
+```
+
+```json
+{
+  "sku": "pizza",
+  "action": "reserve",
+  "quantity": 2
+}
+```
+
+```json
+{
+  "sku": "pizza",
+  "action": "release",
+  "quantity": 1
+}
+```
+
+The client can keep sending commands while the server emits events on the same open session.
+
+```text
+command  -------------------->
+         <-------------------- event
+command  -------------------->
+         <-------------------- event
+command  -------------------->
+         <-------------------- event
+```
+
+Click **End Streaming** when finished.
+
+### Why only Unary is demonstrated through the external REST API
+
+The public REST endpoint maps naturally to a synchronous request/response interaction, so it demonstrates **Unary gRPC** internally.
+
+The other three gRPC interaction models are tested directly against Inventory because mapping them to a traditional REST endpoint would require additional mechanisms such as SSE, chunked streaming, or WebSockets and would distract from the gRPC lesson.
+
+```text
+External REST demo
+    -> Unary gRPC internally
+
+Direct Postman gRPC demo
+    -> Unary
+    -> Server Streaming
+    -> Client Streaming
+    -> Bidirectional Streaming
+```
+
+---
+
+## 9. Optional: inspect gRPC on the wire with Docker/TShark
+
+Postman shows the logical request and response in a readable form, but gRPC actually sends **binary Protocol Buffer messages inside gRPC frames over HTTP/2**.
+
+For this lab you can observe that traffic without installing Wireshark. The Compose file contains an optional `grpc-sniffer` service based on the `wireshark/tshark` image.
+
+The sniffer shares the **network namespace of `inventory-service`**, so it sees the traffic arriving on gRPC port `50051`:
+
+```text
+Postman
+   |
+   | gRPC / HTTP/2
+   v
+localhost:50051
+   |
+   v
+Inventory Service
+   ^
+   |
+TShark container
+(shared network namespace)
+```
+
+Start the application first:
 
 ```bash
-make unary
+docker compose up --build -d
 ```
 
-RPC:
-
-```proto
-rpc CreateOrder(CreateOrderRequest) returns (OrderReply);
-```
-
-Use it when a normal synchronous request/response is sufficient.
-
-### Server Streaming: 1 request -> N responses
+Then, in a second terminal, start the sniffer:
 
 ```bash
-make server-stream
+docker compose --profile tools run --rm grpc-sniffer
 ```
 
-RPC:
+or equivalently:
 
-```proto
-rpc WatchOrder(WatchOrderRequest) returns (stream OrderUpdate);
+```bash
+make sniff
 ```
 
-The example streams order status changes:
+Now invoke an Inventory RPC from Postman, for example `CheckAvailability`.
+
+The TShark output is intentionally verbose and includes:
+
+- HTTP/2 `DATA` frames;
+- the gRPC message envelope;
+- a hexadecimal dump of the binary payload.
+
+The Compose command decodes TCP port `50051` as HTTP/2 and filters the display to HTTP/2 `DATA` frames:
 
 ```text
-CREATED
-ACCEPTED
-PREPARING
-READY
+-i any
+-f "tcp port 50051"
+-d tcp.port==50051,http2
+-Y "http2.type == 0"
+-V
+-x
 ```
 
-The REST API also demonstrates how a public service can bridge this stream through:
+A gRPC message carried in an HTTP/2 `DATA` frame begins with a **5-byte gRPC message prefix**:
 
 ```text
-GET /orders/{orderId}/updates
++------------------+------------------------+----------------------+
+| compression flag | message length         | protobuf payload     |
+| 1 byte           | 4 bytes, big endian    | N bytes              |
++------------------+------------------------+----------------------+
 ```
 
-### Client Streaming: N requests -> 1 response
+Conceptually:
+
+```text
+Postman view
+{
+  "sku": "pizza",
+  "quantity": 2
+}
+        |
+        v
+Protocol Buffer serialization
+        |
+        v
+binary protobuf payload
+        |
+        v
+gRPC 5-byte message prefix
+        |
+        v
+HTTP/2 DATA frame
+```
+
+This is useful for distinguishing three different concepts that are often conflated:
+
+```text
+.proto contract       -> schema and RPC definition
+Protocol Buffers      -> binary message serialization
+gRPC over HTTP/2      -> remote-call framing and transport
+```
+
+> **Important:** the sniffer is a diagnostic teaching tool, not an application component. It is placed under the Compose `tools` profile and is not started by the normal `docker compose up` workflow.
+
+Stop the sniffer with `Ctrl+C` when the demonstration is complete.
+
+---
+
+## 10. Optional: run the Dockerized gRPC demo clients
+
+Postman is the recommended graphical demonstration. The repository also contains small Python gRPC clients, but they run **inside Docker**, not on the host.
 
 ```bash
-make client-stream
+docker compose --profile tools run --rm grpc-client unary.py
 ```
-
-RPC:
-
-```proto
-rpc BulkCreateOrders(stream CreateOrderRequest) returns (BulkCreateReply);
-```
-
-The client streams multiple orders and receives one final summary.
-
-### Bidirectional Streaming: N requests <-> N responses
 
 ```bash
-make bidi
+docker compose --profile tools run --rm grpc-client server_streaming.py
 ```
 
-RPC:
-
-```proto
-rpc OrderConversation(stream OrderCommand) returns (stream OrderEvent);
+```bash
+docker compose --profile tools run --rm grpc-client client_streaming.py
 ```
 
-The client and server can independently exchange messages on the same HTTP/2 stream.
+```bash
+docker compose --profile tools run --rm grpc-client bidirectional.py
+```
 
-## 8. REST vs gRPC in this example
+These scripts are useful for showing that generated stubs can also be consumed programmatically.
 
-| Concern | External REST API | Internal gRPC API |
+---
+
+## 11. REST vs gRPC in this concrete example
+
+| Concern | External Checkout boundary | Internal Inventory boundary |
 |---|---|---|
-| Style | Resources + HTTP methods | Remote service operations |
-| Contract | OpenAPI generated by FastAPI | `.proto` |
-| Payload | JSON text | Protocol Buffers binary |
-| Client | Browser / curl / generic HTTP | Generated typed stub |
-| Transport | HTTP | HTTP/2 |
-| Streaming | Requires HTTP-specific mechanisms | Native server/client/bidirectional streaming |
-| Best fit here | External heterogeneous clients | Controlled service-to-service communication |
+| Technology | REST/HTTP | gRPC over HTTP/2 |
+| Payload | JSON | Protocol Buffers |
+| Main abstraction | Resources + HTTP operations | Typed remote operations |
+| Consumer | Browsers / generic HTTP clients | Controlled internal services |
+| Client code | Any HTTP client | Generated typed stub |
+| Contract | FastAPI/OpenAPI | `.proto` |
+| Interaction model | Mainly request/response here | Unary + native streaming RPCs |
+| Main benefit here | Openness and interoperability | Strong contract and rich service-to-service interactions |
 
-The important point is not that one protocol is universally better. The communication boundary determines the best trade-off.
+The lesson is **not** that gRPC is always better than REST. The appropriate choice depends on the communication boundary.
 
-## 9. Optional: inspect the gRPC API with reflection
+A common architecture is:
 
-The server enables gRPC reflection, so a tool such as `grpcurl` can inspect the service:
-
-```bash
-grpcurl -plaintext localhost:50051 list
-grpcurl -plaintext localhost:50051 describe ftgo.order.v1.OrderService
+```text
+external heterogeneous clients
+            |
+           REST
+            v
+      public service
+            |
+           gRPC
+            v
+      internal service
 ```
 
-Example unary call:
+---
 
-```bash
-grpcurl -plaintext \
-  -d '{"restaurantId":"rest-1","item":"pizza","quantity":2}' \
-  localhost:50051 \
-  ftgo.order.v1.OrderService/CreateOrder
-```
-
-## 10. Test the application core without gRPC
-
-The core can be tested independently of transport technology:
-
-```bash
-pytest -q
-```
-
-`tests/test_order_application_service.py` uses the in-memory repository directly and never starts a gRPC server.
-
-This is one of the main benefits of Ports and Adapters: replacing REST with gRPC, or adding both, does not require moving the business logic into the transport layer.
-
-## Cleanup
+## 12. Stop the lab
 
 ```bash
 docker compose down -v
 ```
 
-## What to observe
+---
 
-1. `order.proto` is the contract used by both sides of the internal call.
-2. `grpcio-tools` generates transport plumbing, not application behavior.
-3. FastAPI exposes a REST-friendly boundary while internally using a generated gRPC stub.
-4. The gRPC server is an inbound adapter that depends on the `OrderUseCases` port, not on the concrete application service.
-5. The four RPC styles are differences in the communication model, not changes to the domain model.
-6. REST and gRPC can coexist naturally in the same microservice system.
+## Teaching sequence
+
+A useful classroom walkthrough is:
+
+```text
+1. Why two different services?
+        |
+        v
+2. Inspect inventory.proto
+        |
+        v
+3. Understand generated stub + server interface
+   (generation happens during Docker build)
+        |
+        v
+4. Understand Checkout outbound port + gRPC adapter
+        |
+        v
+5. Understand Inventory gRPC adapter + inbound port
+        |
+        v
+6. docker compose up --build -d
+        |
+        v
+7. REST call to Checkout with curl or Postman HTTP
+        |
+        v
+8. Observe Unary gRPC collaboration internally
+        |
+        v
+9. In Postman, compare HTTP and gRPC requests
+        |
+        v
+10. Open Postman gRPC on localhost:50051
+        |
+        v
+11. Explore Unary + three streaming models
+        |
+        v
+12. Optionally run the Docker/TShark sniffer
+    and inspect HTTP/2 DATA + binary gRPC payload
+        |
+        v
+13. Compare REST and gRPC boundary trade-offs
+```
+
+The most important end-to-end observation is:
+
+```text
+REST client
+    -> Checkout Service
+    -> InventoryGateway
+    -> GrpcInventoryClient
+    -> gRPC
+    -> GrpcInventoryAdapter
+    -> InventoryUseCases
+```
+
+The external contract and the internal collaboration use different technologies because they serve different consumers and architectural needs.

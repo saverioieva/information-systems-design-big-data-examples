@@ -1,11 +1,9 @@
 import json
 from urllib.request import Request, urlopen
 
-payload = json.dumps(
-    {"restaurant_id": "rest-1", "item": "pizza", "quantity": 2}
-).encode()
+payload = json.dumps({"sku": "pizza", "quantity": 2}).encode()
 request = Request(
-    "http://localhost:8000/orders",
+    "http://localhost:8000/checkouts",
     data=payload,
     headers={"Content-Type": "application/json"},
     method="POST",

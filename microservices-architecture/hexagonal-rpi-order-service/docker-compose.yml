@@ -15,17 +15,63 @@ services:
     volumes:
       - order_db:/var/lib/postgresql/data
 
-  order-service:
+  db-init:
     build:
       context: .
       dockerfile: app/Dockerfile
+    command:
+      - python
+      - -c
+      - from order_service.infrastructure.database import create_schema; create_schema()
     environment:
       DATABASE_URL: postgresql+psycopg://orders:orders@postgres:5432/orders
     depends_on:
       postgres:
         condition: service_healthy
+
+  order-fastapi:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    command: ["uvicorn", "order_service.main_fastapi:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://orders:orders@postgres:5432/orders
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; s=socket.create_connection(('127.0.0.1',8000),2); s.close()
+      interval: 3s
+      timeout: 3s
+      retries: 20
     ports:
       - "8000:8000"
+
+  order-flask:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    command: ["python", "-m", "flask", "--app", "order_service.main_flask:app", "run", "--host=0.0.0.0", "--port=5000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://orders:orders@postgres:5432/orders
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; s=socket.create_connection(('127.0.0.1',5000),2); s.close()
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5000:5000"
 
   swagger-ui:
     image: swaggerapi/swagger-ui:v5.17.14
@@ -35,6 +81,69 @@ services:
       - ./openapi:/spec:ro
     ports:
       - "8080:8080"
+
+  swagger-codegen:
+    image: swaggerapi/swagger-codegen-cli-v3:3.0.81
+    profiles: ["tools"]
+    volumes:
+      - ./openapi:/local/openapi:ro
+      - ./generated:/local/generated
+    command:
+      - generate
+      - -i
+      - /local/openapi/order-api.yaml
+      - -l
+      - python
+      - -o
+      - /local/generated/swagger-python-client
+
+  openapi-generator:
+    image: openapitools/openapi-generator-cli:v7.9.0
+    profiles: ["tools"]
+    volumes:
+      - ./openapi:/local/openapi:ro
+      - ./generated:/local/generated
+    command:
+      - generate
+      - -i
+      - /local/openapi/order-api.yaml
+      - -g
+      - python
+      - -o
+      - /local/generated/openapi-python-client
+
+  rpi-client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    profiles: ["tools"]
+    environment:
+      ORDER_API_BASE_URL: http://order-fastapi:8000
+    depends_on:
+      order-fastapi:
+        condition: service_healthy
+
+  swagger-generated-client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile.swagger-generated
+    profiles: ["tools"]
+    environment:
+      ORDER_API_BASE_URL: http://order-fastapi:8000
+    depends_on:
+      order-fastapi:
+        condition: service_healthy
+
+  openapi-generated-client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile.openapi-generated
+    profiles: ["tools"]
+    environment:
+      ORDER_API_BASE_URL: http://order-fastapi:8000
+    depends_on:
+      order-fastapi:
+        condition: service_healthy
 
 volumes:
   order_db:

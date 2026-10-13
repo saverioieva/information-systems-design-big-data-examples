@@ -6,7 +6,7 @@ RUN mkdir -p /app/generated && \
     python -m grpc_tools.protoc -I/app/proto \
       --python_out=/app/generated \
       --grpc_python_out=/app/generated \
-      /app/proto/order.proto
+      /app/proto/inventory.proto
 COPY demo-clients /app/clients
 ENV PYTHONPATH=/app/generated:/app/clients
 WORKDIR /app/clients

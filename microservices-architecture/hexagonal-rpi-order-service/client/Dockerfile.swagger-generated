@@ -1,0 +1,10 @@
+FROM python:3.12-slim
+
+WORKDIR /client
+
+COPY generated/swagger-python-client /generated-client
+RUN pip install --no-cache-dir /generated-client
+
+COPY client/swagger_generated_client.py /client/swagger_generated_client.py
+
+CMD ["python", "/client/swagger_generated_client.py"]

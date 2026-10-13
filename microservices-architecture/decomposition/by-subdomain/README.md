@@ -23,6 +23,25 @@ Restaurant context          Courier context
 
 The split is derived from the domain language and rules rather than from the high-level `Supplier Management` capability.
 
+
+## Implementation note: FastAPI and Pydantic
+
+Both services use FastAPI only to keep the bounded-context examples easy to run. Their Pydantic `BaseModel` classes describe **HTTP request payloads** and provide JSON parsing and validation.
+
+```text
+HTTP / JSON
+    ↓
+Pydantic request DTO
+    ↓
+FastAPI endpoint
+    ↓
+Restaurant or Courier example logic
+```
+
+The Pydantic classes should not be confused with the DDD concepts discussed here: a Pydantic model is not a **subdomain**, **bounded context**, or domain model by itself. The decomposition decision is based on differences in language, rules, and responsibility.
+
+This lab intentionally does not add Hexagonal Architecture so that the focus remains on **where the service boundaries are placed**.
+
 ## Run
 
 From this directory:

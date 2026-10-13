@@ -1,26 +1,27 @@
-"""Small synchronous RPI client adapter used for the lab."""
+import os
 
 import requests
 
-BASE_URL = "http://localhost:8000"
+
+BASE_URL = os.getenv("ORDER_API_BASE_URL", "http://localhost:8000")
 
 
 def main() -> None:
     created = requests.post(
         f"{BASE_URL}/orders",
         json={"restaurantId": 42, "total": 25.50},
-        timeout=3,
+        timeout=5,
     )
     created.raise_for_status()
     order = created.json()
-    print("POST /orders ->", order)
+    print("Created:", order)
 
     fetched = requests.get(
         f"{BASE_URL}/orders/{order['id']}",
-        timeout=3,
+        timeout=5,
     )
     fetched.raise_for_status()
-    print("GET /orders/{id} ->", fetched.json())
+    print("Fetched:", fetched.json())
 
 
 if __name__ == "__main__":

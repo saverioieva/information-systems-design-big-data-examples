@@ -20,6 +20,23 @@ Clients
 +--------------------+
 ```
 
+
+## Implementation note: FastAPI and Pydantic
+
+The service uses FastAPI only to make the example runnable. Classes such as `RestaurantCreate`, `MenuUpdate`, `CourierCreate`, and `AvailabilityUpdate` inherit from Pydantic `BaseModel` because FastAPI uses them to parse and validate incoming JSON requests.
+
+```text
+HTTP / JSON
+    ↓
+Pydantic request DTO
+    ↓
+FastAPI endpoint
+    ↓
+example business logic
+```
+
+These Pydantic classes are **transport DTOs**, not domain entities and not service-boundary abstractions. This example intentionally avoids Ports and Adapters so that the only design variable under discussion is the **business-capability boundary**.
+
 ## Run
 
 From this directory:

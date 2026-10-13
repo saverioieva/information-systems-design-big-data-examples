@@ -9,6 +9,6 @@ python -m grpc_tools.protoc \
   -I "$ROOT/proto" \
   --python_out="$OUT" \
   --grpc_python_out="$OUT" \
-  "$ROOT/proto/order.proto"
+  "$ROOT/proto/inventory.proto"
 
 echo "Generated Python gRPC code in: $OUT"

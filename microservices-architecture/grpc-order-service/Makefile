@@ -1,4 +1,4 @@
-.PHONY: generate up down unary server-stream client-stream bidi rest logs
+.PHONY: generate up down rest unary server-stream client-stream bidi sniff logs test
 
 generate:
 	./scripts/generate_proto.sh
@@ -8,6 +8,9 @@ up:
 
 down:
 	docker compose down -v
+
+rest:
+	python demo-clients/rest_client.py
 
 unary:
 	docker compose --profile tools run --rm grpc-client unary.py
@@ -21,8 +24,11 @@ client-stream:
 bidi:
 	docker compose --profile tools run --rm grpc-client bidirectional.py
 
-rest:
-	python demo-clients/rest_client.py
+sniff:
+	docker compose --profile tools run --rm grpc-sniffer
 
 logs:
 	docker compose logs -f
+
+test:
+	pytest -q

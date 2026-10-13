@@ -1,21 +1,21 @@
 services:
-  order-service:
+  inventory-service:
     build:
       context: .
-      dockerfile: order-service/Dockerfile
+      dockerfile: inventory-service/Dockerfile
     environment:
       GRPC_PORT: "50051"
     ports:
       - "50051:50051"
 
-  api-service:
+  checkout-service:
     build:
       context: .
-      dockerfile: api-service/Dockerfile
+      dockerfile: checkout-service/Dockerfile
     environment:
-      ORDER_GRPC_TARGET: order-service:50051
+      INVENTORY_GRPC_TARGET: inventory-service:50051
     depends_on:
-      - order-service
+      - inventory-service
     ports:
       - "8000:8000"
 
@@ -24,7 +24,28 @@ services:
       context: .
       dockerfile: demo-clients/Dockerfile
     environment:
-      ORDER_GRPC_TARGET: order-service:50051
+      INVENTORY_GRPC_TARGET: inventory-service:50051
     depends_on:
-      - order-service
+      - inventory-service
     profiles: ["tools"]
+  grpc-sniffer:
+    image: parrotsec/tshark:latest
+    network_mode: "service:inventory-service"
+    depends_on:
+      - inventory-service
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    profiles: ["tools"]
+    command:
+      - -i
+      - any
+      - -f
+      - tcp port 50051
+      - -d
+      - tcp.port==50051,http2
+      - -Y
+      - http2.type == 0
+      - -V
+      - -x
+
