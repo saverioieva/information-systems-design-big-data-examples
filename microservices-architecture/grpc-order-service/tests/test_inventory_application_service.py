@@ -35,3 +35,23 @@ def test_bidirectional_command_logic_is_in_the_core() -> None:
     reserved = service.apply_command("pizza", "reserve", 2)
     assert reserved.message == "reserved"
     assert reserved.available_quantity == 6
+
+
+def test_rest_adapter_invokes_the_same_inventory_core() -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from inventory_service.adapters.inbound.rest.routes import create_router
+
+    app = FastAPI()
+    app.include_router(create_router(build_service()))
+    client = TestClient(app)
+
+    response = client.post("/availability", json={"sku": "pizza", "quantity": 2})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "sku": "pizza",
+        "requestedQuantity": 2,
+        "availableQuantity": 8,
+        "available": True,
+    }

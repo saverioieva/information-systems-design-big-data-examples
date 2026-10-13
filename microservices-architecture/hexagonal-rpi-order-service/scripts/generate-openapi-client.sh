@@ -2,10 +2,13 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-cd "$ROOT_DIR"
+mkdir -p "$ROOT_DIR/generated"
 
-mkdir -p generated
-
-docker compose run --rm openapi-generator
+docker run --rm \
+  -v "$ROOT_DIR:/local" \
+  openapitools/openapi-generator-cli:v7.9.0 generate \
+  -i /local/openapi/order-api.yaml \
+  -g python \
+  -o /local/generated/openapi-python-client
 
 echo "Generated client: generated/openapi-python-client"

@@ -39,15 +39,6 @@ services:
     depends_on:
       db-init:
         condition: service_completed_successfully
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import socket; s=socket.create_connection(('127.0.0.1',8000),2); s.close()
-      interval: 3s
-      timeout: 3s
-      retries: 20
     ports:
       - "8000:8000"
 
@@ -61,15 +52,6 @@ services:
     depends_on:
       db-init:
         condition: service_completed_successfully
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import socket; s=socket.create_connection(('127.0.0.1',5000),2); s.close()
-      interval: 3s
-      timeout: 3s
-      retries: 20
     ports:
       - "5000:5000"
 
@@ -82,24 +64,9 @@ services:
     ports:
       - "8080:8080"
 
-  swagger-codegen:
-    image: swaggerapi/swagger-codegen-cli-v3:3.0.81
-    profiles: ["tools"]
-    volumes:
-      - ./openapi:/local/openapi:ro
-      - ./generated:/local/generated
-    command:
-      - generate
-      - -i
-      - /local/openapi/order-api.yaml
-      - -l
-      - python
-      - -o
-      - /local/generated/swagger-python-client
-
-  openapi-generator:
-    image: openapitools/openapi-generator-cli:v7.9.0
-    profiles: ["tools"]
+  openapi-server-generator:
+    image: openapitools/openapi-generator-cli:v7.26.0
+    profiles: ["codegen"]
     volumes:
       - ./openapi:/local/openapi:ro
       - ./generated:/local/generated
@@ -108,42 +75,9 @@ services:
       - -i
       - /local/openapi/order-api.yaml
       - -g
-      - python
+      - python-fastapi
       - -o
-      - /local/generated/openapi-python-client
-
-  rpi-client:
-    build:
-      context: .
-      dockerfile: client/Dockerfile
-    profiles: ["tools"]
-    environment:
-      ORDER_API_BASE_URL: http://order-fastapi:8000
-    depends_on:
-      order-fastapi:
-        condition: service_healthy
-
-  swagger-generated-client:
-    build:
-      context: .
-      dockerfile: client/Dockerfile.swagger-generated
-    profiles: ["tools"]
-    environment:
-      ORDER_API_BASE_URL: http://order-fastapi:8000
-    depends_on:
-      order-fastapi:
-        condition: service_healthy
-
-  openapi-generated-client:
-    build:
-      context: .
-      dockerfile: client/Dockerfile.openapi-generated
-    profiles: ["tools"]
-    environment:
-      ORDER_API_BASE_URL: http://order-fastapi:8000
-    depends_on:
-      order-fastapi:
-        condition: service_healthy
+      - /local/generated/openapi-fastapi-server
 
 volumes:
   order_db:

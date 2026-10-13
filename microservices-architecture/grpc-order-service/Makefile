@@ -1,7 +1,4 @@
-.PHONY: generate up down rest unary server-stream client-stream bidi sniff logs test
-
-generate:
-	./scripts/generate_proto.sh
+.PHONY: up down checkout-grpc checkout-rest inventory-rest compare unary server-stream client-stream bidi sniff generate-grpc-skeleton clean-generated logs test
 
 up:
 	docker compose up --build -d
@@ -9,8 +6,17 @@ up:
 down:
 	docker compose down -v
 
-rest:
-	python demo-clients/rest_client.py
+checkout-grpc:
+	curl -s -X POST http://localhost:8000/checkouts -H 'Content-Type: application/json' -d '{"sku":"pizza","quantity":2}'
+
+checkout-rest:
+	curl -s -X POST http://localhost:8001/checkouts -H 'Content-Type: application/json' -d '{"sku":"pizza","quantity":2}'
+
+inventory-rest:
+	curl -s -X POST http://localhost:8081/availability -H 'Content-Type: application/json' -d '{"sku":"pizza","quantity":2}'
+
+compare:
+	docker compose --profile tools run --rm grpc-client compare_unary.py
 
 unary:
 	docker compose --profile tools run --rm grpc-client unary.py
@@ -27,8 +33,14 @@ bidi:
 sniff:
 	docker compose --profile tools run --rm grpc-sniffer
 
+generate-grpc-skeleton:
+	docker compose --profile codegen run --rm grpc-codegen
+
+clean-generated:
+	rm -rf generated
+
 logs:
 	docker compose logs -f
 
 test:
-	pytest -q
+	docker compose --profile tools run --rm test-runner

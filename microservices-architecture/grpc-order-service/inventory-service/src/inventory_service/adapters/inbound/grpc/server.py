@@ -78,18 +78,30 @@ class GrpcInventoryAdapter(inventory_pb2_grpc.InventoryServiceServicer):
                 )
 
 
-def serve(use_cases: InventoryUseCases) -> None:
+def create_server(use_cases: InventoryUseCases) -> grpc.Server:
     port = os.getenv("GRPC_PORT", "50051")
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    inventory_pb2_grpc.add_InventoryServiceServicer_to_server(GrpcInventoryAdapter(use_cases), server)
+    inventory_pb2_grpc.add_InventoryServiceServicer_to_server(
+        GrpcInventoryAdapter(use_cases), server
+    )
 
     service_names = (
         inventory_pb2.DESCRIPTOR.services_by_name["InventoryService"].full_name,
         reflection.SERVICE_NAME,
     )
     reflection.enable_server_reflection(service_names, server)
-
     server.add_insecure_port(f"[::]:{port}")
+    return server
+
+
+def start_server(use_cases: InventoryUseCases) -> grpc.Server:
+    port = os.getenv("GRPC_PORT", "50051")
+    server = create_server(use_cases)
     server.start()
-    print(f"Inventory gRPC service listening on :{port}", flush=True)
+    print(f"Inventory gRPC adapter listening on :{port}", flush=True)
+    return server
+
+
+def serve(use_cases: InventoryUseCases) -> None:
+    server = start_server(use_cases)
     server.wait_for_termination()

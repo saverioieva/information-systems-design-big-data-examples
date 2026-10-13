@@ -1,21 +1,19 @@
 # Hexagonal Order Service — interchangeable REST adapters
 
-This lab implements a small **Order Service** and connects several concepts from the Microservices Architecture module:
+This lab implements a small **Order Service** and uses one concrete example to connect several concepts from the Microservices Architecture module:
 
 - synchronous **Remote Procedure Invocation (RPI)** over HTTP;
 - **Hexagonal Architecture** with explicit inbound/outbound ports and adapters;
 - **two alternative inbound REST adapters**: FastAPI and Flask;
-- one framework-independent **`OrderUseCases` inbound port** shared by both adapters;
-- one **application core** that is independent of the web framework;
+- a single **`OrderUseCases` inbound port** shared by both adapters;
+- a single **application core** that is independent of the web framework;
 - **PostgreSQL** behind an `OrderRepository` outbound port;
-- **OpenAPI**, Swagger UI, Swagger Codegen, and OpenAPI Generator;
-- **Docker Compose** for the services, code-generation tools, tests, and clients.
+- **OpenAPI**, Swagger UI, client generation, and optional server-skeleton generation;
+- **Docker Compose** for running both adapters and Dockerized code-generation tools.
 
-The main teaching point is:
+The main teaching point is simple:
 
 > Replacing FastAPI with Flask changes the inbound adapter, not the application core.
-
-A second practical goal is reproducibility: **no local Python environment is required**. Docker Compose runs the application, code generators, handwritten client, and generated clients.
 
 ## Architecture
 
@@ -65,27 +63,11 @@ The dependency direction is always toward abstractions and the core:
 - the **FastAPI adapter** depends on `OrderUseCases`;
 - the **Flask adapter** also depends on `OrderUseCases`;
 - `OrderApplicationService` implements `OrderUseCases`;
-- the application core does not depend on FastAPI, Flask, Pydantic, HTTP, SQLAlchemy, or PostgreSQL;
+- the application core does not depend on FastAPI, Flask, HTTP, SQLAlchemy, or PostgreSQL;
 - the core depends on the `OrderRepository` outbound port;
 - `PostgresOrderRepository` implements that port.
 
 > **Important:** inbound adapters do not implement the inbound port. They translate transport-specific input into calls to the port. The application service implements the inbound port.
-
-## Requirements
-
-Only these tools are required on the host:
-
-- Docker Engine;
-- Docker Compose v2.
-
-`curl` is useful for manual HTTP calls but is not required to run the Python clients.
-
-Verify Docker:
-
-```bash
-docker --version
-docker compose version
-```
 
 ## Project structure
 
@@ -122,26 +104,19 @@ hexagonal-rpi-order-service/
 │       ├── main_flask.py
 │       └── main.py
 ├── client/
-│   ├── Dockerfile
-│   ├── Dockerfile.swagger-generated
-│   ├── Dockerfile.openapi-generated
-│   ├── requirements.txt
-│   ├── rpi_client.py
-│   ├── swagger_generated_client.py
-│   └── openapi_generated_client.py
+│   └── rpi_client.py
 ├── tests/
 │   ├── test_order_service.py
 │   └── test_rest_adapters.py
 ├── scripts/
 │   ├── compare-rest-adapters.sh
 │   ├── generate-swagger-client.sh
-│   ├── generate-openapi-client.sh
-│   ├── run-rpi-client.sh
-│   ├── run-swagger-generated-client.sh
-│   └── run-openapi-generated-client.sh
-├── generated/                 # created by the generators; ignored by Git
+│   └── generate-openapi-client.sh
+├── Makefile
 └── docker-compose.yml
 ```
+
+The `generated/` directory is intentionally not shown because it is created on demand and is excluded from Git. It can contain generated clients and the optional generated server skeleton used only for inspection.
 
 ## 1. Start from the inbound port
 
@@ -176,7 +151,34 @@ The FastAPI adapter is in:
 app/src/order_service/adapters/inbound/fastapi/routes.py
 ```
 
-It creates an `APIRouter`, receives HTTP/JSON data, validates it through Pydantic models, and invokes only `OrderUseCases`:
+It creates an `APIRouter`, validates HTTP input through Pydantic models, translates transport data to domain-oriented values, and calls only `OrderUseCases`.
+
+### DTOs and Pydantic at the REST boundary
+
+A **DTO (Data Transfer Object)** is a small object used to carry data across a boundary. In this lab, request/response DTOs represent the JSON shape exchanged through HTTP. They belong to the **REST adapter**, not to the domain model: `CreateOrderRequest` describes incoming transport data, while `OrderResponse` describes outgoing transport data.
+
+**Pydantic** is a Python library for parsing, validating, and serializing structured data from type annotations. FastAPI integrates Pydantic directly, so `BaseModel` classes can be used as REST DTOs and FastAPI can automatically validate request bodies, serialize responses, and derive OpenAPI schemas.
+
+```text
+HTTP / JSON
+    ↓
+Pydantic DTOs              transport boundary
+    ↓
+OrderUseCases              application boundary
+    ↓
+Domain objects             application/domain
+```
+
+The important distinction is:
+
+```text
+CreateOrderRequest / OrderResponse  -> REST DTOs
+Order                              -> domain entity
+```
+
+The DTOs may change when the HTTP contract changes; the domain entity should change only when the business model changes.
+
+The adapter then calls the application port:
 
 ```python
 def build_order_router(use_cases: OrderUseCases) -> APIRouter:
@@ -193,7 +195,7 @@ def build_order_router(use_cases: OrderUseCases) -> APIRouter:
     return router
 ```
 
-Framework-specific concepts remain outside the core:
+Framework-specific concepts stay in the adapter:
 
 ```text
 APIRouter
@@ -202,41 +204,9 @@ HTTPException
 HTTP status codes
 ```
 
-## 3. Pydantic DTOs are not domain models
+None of these appear in the application core.
 
-Pydantic is used because it integrates naturally with FastAPI for HTTP-boundary concerns:
-
-```text
-JSON request
-    ↓
-Pydantic DTO
-    ↓ validation / conversion
-FastAPI adapter
-    ↓
-OrderUseCases
-    ↓
-Application core / domain
-```
-
-For example, `CreateOrderRequest` and `OrderResponse` describe the **REST representation** of an order. They are transport DTOs owned by the FastAPI adapter.
-
-The domain entity is separate:
-
-```text
-CreateOrderRequest / OrderResponse   -> REST adapter DTOs
-Order                               -> domain model
-```
-
-This distinction is intentional:
-
-- Pydantic validates and serializes REST data;
-- FastAPI uses the models to generate its OpenAPI description;
-- the application core does **not** import Pydantic;
-- changing or removing FastAPI must not require changing the domain model.
-
-Pydantic is therefore a **framework/boundary detail**, not a requirement of Hexagonal Architecture.
-
-## 4. Flask as an alternative inbound adapter
+## 3. Flask as an alternative inbound adapter
 
 The Flask adapter is in:
 
@@ -264,6 +234,10 @@ def build_order_blueprint(use_cases: OrderUseCases) -> Blueprint:
 
 Again, the adapter depends on `OrderUseCases`, not on `OrderApplicationService`.
 
+Flask does **not** require Pydantic and does not automatically bind request bodies to typed models. In this lab the Flask adapter deliberately uses `request.get_json()`, plain Python dictionaries, explicit validation, and `jsonify()` so that the framework difference remains visible. Pydantic *could* also be added to a Flask application, but it would be an explicit adapter choice rather than a framework-integrated mechanism.
+
+Conceptually, the Flask JSON dictionaries play the same transport role as the FastAPI DTOs: they carry data across the HTTP boundary and are translated before the application core is called.
+
 ### FastAPI vs Flask at the adapter boundary
 
 | Concern | FastAPI adapter | Flask adapter |
@@ -272,12 +246,12 @@ Again, the adapter depends on `OrderUseCases`, not on `OrderApplicationService`.
 | Route decorator | `@router.post(...)` | `@blueprint.post(...)` |
 | Request parsing | Pydantic model binding | `request.get_json()` |
 | Validation | Mostly automatic | Explicit/manual in this lab |
-| Response conversion | Pydantic response model | `jsonify()` |
+| Response conversion | response model | `jsonify()` |
 | Core dependency | `OrderUseCases` | `OrderUseCases` |
 
 The framework APIs differ. The application port does not.
 
-## 5. Two composition roots, same core
+## 4. Two composition roots, same core
 
 FastAPI wiring:
 
@@ -308,12 +282,12 @@ main_flask.py
 
 `main.py` remains a small compatibility alias to the FastAPI entry point.
 
-## 6. Start the complete stack
+## 5. Run both adapters
 
 From this directory:
 
 ```bash
-docker compose up --build -d
+docker compose up --build
 ```
 
 Services:
@@ -328,9 +302,7 @@ Services:
 
 Both REST adapters use the same application-core code and the same PostgreSQL schema.
 
-## 7. Call the same use case through FastAPI and Flask
-
-FastAPI:
+## 6. Call the same use case through FastAPI
 
 ```bash
 curl -i -X POST http://localhost:8000/orders \
@@ -338,7 +310,25 @@ curl -i -X POST http://localhost:8000/orders \
   -d '{"restaurantId":42,"total":25.50}'
 ```
 
-Flask:
+Execution path:
+
+```text
+HTTP / JSON
+    ↓
+FastAPI APIRouter
+    ↓
+OrderUseCases
+    ↓
+OrderApplicationService
+    ↓
+OrderRepository
+    ↓
+PostgresOrderRepository
+    ↓
+PostgreSQL
+```
+
+## 7. Call the same use case through Flask
 
 ```bash
 curl -i -X POST http://localhost:5000/orders \
@@ -346,21 +336,25 @@ curl -i -X POST http://localhost:5000/orders \
   -d '{"restaurantId":42,"total":25.50}'
 ```
 
-Both requests eventually execute the same path from the port inward:
+Execution path:
 
 ```text
-REST adapter
-     ↓
+HTTP / JSON
+    ↓
+Flask Blueprint
+    ↓
 OrderUseCases
-     ↓
+    ↓
 OrderApplicationService
-     ↓
+    ↓
 OrderRepository
-     ↓
+    ↓
 PostgresOrderRepository
-     ↓
+    ↓
 PostgreSQL
 ```
+
+The outer framework changes; everything from `OrderUseCases` inward stays the same.
 
 For a quick side-by-side demonstration:
 
@@ -370,7 +364,7 @@ For a quick side-by-side demonstration:
 
 ## 8. One published REST contract
 
-The explicit contract is:
+The explicit contract remains:
 
 ```text
 openapi/order-api.yaml
@@ -383,7 +377,7 @@ POST /orders
 GET  /orders/{orderId}
 ```
 
-Both adapters are intended to implement the same external contract. Changing the framework should not silently change the API seen by consumers.
+Both adapters are intended to implement the same external contract. This is important: changing the framework should not silently change the API seen by consumers.
 
 FastAPI also generates an OpenAPI description automatically at:
 
@@ -433,7 +427,7 @@ FastAPI / Flask  ->  OrderUseCases  <-  OrderApplicationService
                               PostgresOrderRepository
 ```
 
-## 10. Test the core and adapters in Docker
+## 10. Test the core and adapters independently
 
 Run:
 
@@ -445,6 +439,8 @@ docker compose run --rm order-fastapi pytest -q /app/tests
 
 `test_rest_adapters.py` injects a fake `OrderUseCases` implementation into both adapters. This proves that neither adapter requires the concrete `OrderApplicationService`.
 
+Conceptually:
+
 ```text
 FakeOrderUseCases
       ↑       ↑
@@ -453,11 +449,13 @@ FakeOrderUseCases
  adapter    adapter
 ```
 
+The same idea works on the outbound side with a fake repository.
+
 ## 11. Inspect PostgreSQL
 
 ```bash
 docker compose exec postgres \
-  psql -U orders -d orders -c '\d orders'
+  psql -U orders -d orders -c '\\d orders'
 ```
 
 ```bash
@@ -467,144 +465,98 @@ docker compose exec postgres \
 
 The SQLAlchemy model is an outbound-adapter detail. The domain `Order` object does not depend on SQLAlchemy.
 
-## 12. Generate clients entirely with Docker
+## 12. Optional: generate and inspect a REST server skeleton
 
-No local Swagger Codegen, Java, Python, or `pip` installation is required.
+The OpenAPI contract can generate not only clients but also a **server-side transport skeleton**. This is useful for showing what code generation can automate without confusing generated framework code with the application architecture.
 
-### Swagger Codegen
+The generator runs entirely in Docker through the optional `codegen` Compose profile:
 
-The Compose service uses `swaggerapi/swagger-codegen-cli-v3:3.0.81`:
+```bash
+make generate-server-skeleton
+```
+
+or equivalently:
+
+```bash
+docker compose --profile codegen run --rm openapi-server-generator
+```
+
+The generated project is written to:
+
+```text
+generated/openapi-fastapi-server/
+```
+
+The flow is:
+
+```text
+openapi/order-api.yaml
+        |
+        | OpenAPI Generator container
+        v
+generated FastAPI server skeleton
+        |
+        | inspect / compare
+        v
+handwritten FastAPI adapter
+        |
+        v
+OrderUseCases
+```
+
+The generated skeleton contains HTTP/framework-facing code derived from the contract: routes, request/response models, and server plumbing. It does **not** know the Hexagonal Architecture chosen for this service and it does not invent `OrderUseCases`, `OrderApplicationService`, or `OrderRepository`.
+
+That distinction is the teaching point:
+
+```text
+generated controller / route skeleton   -> transport/framework boundary
+handwritten FastAPI adapter             -> inbound adapter
+OrderUseCases                            -> application inbound port
+OrderApplicationService                 -> application core
+```
+
+> **Important:** the generated server skeleton is an inspection artifact only. The running lab continues to use the handwritten FastAPI and Flask adapters. Generating or deleting `generated/` does not change the normal `docker compose up` runtime.
+
+Because `generated/` is in `.gitignore`, generated framework code is reproducible from `order-api.yaml` and is not committed. To remove all generated artifacts:
+
+```bash
+make clean-generated
+```
+
+## 13. Generate a REST client
+
+Swagger Codegen:
 
 ```bash
 ./scripts/generate-swagger-client.sh
 ```
 
-Equivalent command:
-
-```bash
-docker compose run --rm swagger-codegen
-```
-
-Generated code is written to:
-
-```text
-generated/swagger-python-client/
-```
-
-### OpenAPI Generator
+OpenAPI Generator:
 
 ```bash
 ./scripts/generate-openapi-client.sh
 ```
 
-Equivalent command:
+The generated client depends on the published REST contract, not on whether the server implementation uses FastAPI or Flask.
+
+The handwritten client can target either adapter. Running it directly with local Python is optional; it is not required for the Docker-based server-skeleton exercise.
 
 ```bash
-docker compose run --rm openapi-generator
+python -m pip install requests
+python client/rpi_client.py
 ```
 
-Generated code is written to:
-
-```text
-generated/openapi-python-client/
-```
-
-The generated clients depend on the **published OpenAPI contract**, not on whether the server implementation uses FastAPI or Flask.
-
-## 13. Run clients entirely with Docker
-
-### Handwritten RPI client
-
-Run the handwritten client against FastAPI:
+FastAPI is the default. To call Flask instead:
 
 ```bash
-./scripts/run-rpi-client.sh
+ORDER_API_BASE_URL=http://localhost:5000 python client/rpi_client.py
 ```
 
-Equivalent command:
-
-```bash
-docker compose run --rm rpi-client
-```
-
-The client container calls the service by its Compose DNS name:
-
-```text
-rpi-client -> http://order-fastapi:8000
-```
-
-To target Flask instead:
-
-```bash
-docker compose run --rm \
-  -e ORDER_API_BASE_URL=http://order-flask:5000 \
-  rpi-client
-```
-
-### Swagger-generated client
-
-Generate, build, and run it with one script:
-
-```bash
-./scripts/run-swagger-generated-client.sh
-```
-
-The script performs:
-
-```text
-order-api.yaml
-      ↓
-Swagger Codegen container
-      ↓
-generated/swagger-python-client
-      ↓
-Docker image for the generated client
-      ↓
-Order Service
-```
-
-To run the already generated/built client again:
-
-```bash
-docker compose run --rm swagger-generated-client
-```
-
-### OpenAPI Generator client
-
-Generate, build, and run it with:
-
-```bash
-./scripts/run-openapi-generated-client.sh
-```
-
-No Python package is installed on the host in any of these flows.
-
-## 14. Why the client is also containerized
-
-The Docker-first setup makes the teaching environment reproducible:
-
-```text
-Host machine
-    |
-    | only Docker / Compose
-    v
-+--------------------------------------+
-| Swagger/OpenAPI generator containers |
-| Python client containers             |
-| FastAPI / Flask containers           |
-| PostgreSQL container                 |
-+--------------------------------------+
-```
-
-This avoids mixing two setup models such as "server in Docker, client in a local virtual environment".
-
-## 15. Stop and clean up
+## 14. Stop and clean up
 
 ```bash
 docker compose down -v
 ```
-
-Generated source code remains under `generated/` so it can be inspected. The directory is ignored by Git.
 
 ## Teaching sequence
 
@@ -616,10 +568,10 @@ A useful classroom walkthrough is:
 2. Show OrderApplicationService implements it
         ↓
 3. Open FastAPI adapter
-   APIRouter + Pydantic DTOs -> OrderUseCases
+   APIRouter -> OrderUseCases
         ↓
 4. Open Flask adapter
-   Blueprint + JSON parsing -> OrderUseCases
+   Blueprint -> OrderUseCases
         ↓
 5. Run the same POST through both adapters
         ↓
@@ -629,11 +581,13 @@ A useful classroom walkthrough is:
         ↓
 8. Run adapter tests with FakeOrderUseCases
         ↓
-9. Inspect the explicit OpenAPI contract
+9. Return to OpenAPI: same external contract
         ↓
-10. Generate a client in a Docker tool container
+10. make generate-server-skeleton
         ↓
-11. Run that generated client in another Docker container
+11. Inspect generated FastAPI transport code
+        ↓
+12. Compare it with the handwritten adapter and OrderUseCases
 ```
 
-The key observation is not merely that FastAPI and Flask can expose the same endpoints. It is that **the application core has no reason to know which framework is connected to its inbound port**, and client tooling can remain reproducible without installing language-specific tools on the host.
+The key observation is not merely that FastAPI and Flask can expose the same endpoints. It is that **the application core has no reason to know which framework is currently connected to its inbound port**. Code generation can automate transport scaffolding, but it does not define the application's ports, domain model, or dependency direction.
