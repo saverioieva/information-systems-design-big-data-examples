@@ -1,6 +1,8 @@
 services:
   order-v1:
     build: ./order-v1
+    environment:
+      SERVICE_VERSION: ${ORDER_V1_SERVICE_VERSION:-1.1.1}
 
   order-v2:
     build: ./order-v2
@@ -14,3 +16,12 @@ services:
     depends_on:
       - order-v1
       - order-v2
+
+  client:
+    image: python:3.12-slim
+    profiles: ["tools"]
+    working_dir: /work
+    volumes:
+      - ./clients:/work:ro
+    depends_on:
+      - api-gateway

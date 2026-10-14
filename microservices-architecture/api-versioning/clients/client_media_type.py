@@ -31,7 +31,8 @@ def main() -> int:
             payload = json.load(response)
             print(f"Request Accept: {media_type}")
             print(f"Response Content-Type: {response.headers.get('Content-Type')}")
-            print(f"API version: {response.headers.get('X-API-Version')}")
+            print(f"API major version: {response.headers.get('X-API-Version')}")
+            print(f"Service version: {response.headers.get('X-Service-Version')}")
             print(f"Vary: {response.headers.get('Vary')}")
             print(json.dumps(payload, indent=2))
     except (HTTPError, URLError) as exc:

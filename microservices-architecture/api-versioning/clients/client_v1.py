@@ -6,11 +6,15 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-def fetch(url: str) -> tuple[dict, str | None]:
+def fetch(url: str) -> tuple[dict, str | None, str | None]:
     request = Request(url, headers={"Accept": "application/json"})
     with urlopen(request, timeout=5) as response:
         payload = json.load(response)
-        return payload, response.headers.get("X-API-Version")
+        return (
+            payload,
+            response.headers.get("X-API-Version"),
+            response.headers.get("X-Service-Version"),
+        )
 
 
 def main() -> int:
@@ -25,7 +29,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        payload, api_version = fetch(args.url)
+        payload, api_version, service_version = fetch(args.url)
     except (HTTPError, URLError) as exc:
         print(f"Request failed: {exc}")
         return 1
@@ -41,7 +45,8 @@ def main() -> int:
     known = {key: payload[key] for key in ("id", "status", "total")}
     extras = sorted(set(payload) - required)
 
-    print(f"API version: {api_version or 'unknown'}")
+    print(f"API major version: {api_version or 'unknown'}")
+    print(f"Service version: {service_version or 'unknown'}")
     print("v1 client successfully read:")
     print(json.dumps(known, indent=2))
     if extras:

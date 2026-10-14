@@ -2,18 +2,50 @@
 
 ## Goal
 
-Show how an API can evolve without breaking existing consumers, and compare two common ways to expose major API versions:
+Show how a published REST API can evolve without forcing clients to change for every software release.
 
-- **URI versioning** — the major version is part of the path;
-- **media-type versioning** — the resource URI stays stable and the client selects the representation through the HTTP `Accept` header.
+The lab compares two ways to expose **major API versions**:
 
-The lab also uses **semantic versioning** to distinguish compatible and incompatible contract changes.
+- **URI versioning** — `/v1/...` and `/v2/...`;
+- **media-type versioning** — stable URI plus a versioned HTTP `Accept` media type.
 
-> **Scope:** this lab intentionally focuses on API contract evolution. It does **not** model Hexagonal Architecture; that concern is isolated in the dedicated Hexagonal Architecture lab.
+It also makes the distinction between **API contract version** and **service/software version** concrete by demonstrating `PATCH`, `MINOR`, and `MAJOR` evolution.
 
-## Scenario
+> **Scope:** this lab focuses on API contract evolution. It intentionally does **not** model Hexagonal Architecture; that concern is isolated in the dedicated Hexagonal Architecture lab.
 
-The original v1 contract contains:
+## The key distinction
+
+A public major API version and a software release are related, but they are not the same thing.
+
+```text
+Public API contract            Service release
+-----------------              ---------------
+v1                             1.0.0
+v1                             1.1.0
+v1                             1.1.1
+
+v2                             2.0.0
+```
+
+The client does **not** need a new URI for every compatible release.
+
+The responses make this distinction visible:
+
+```http
+X-API-Version: 1
+X-Service-Version: 1.1.1
+```
+
+For media-type versioning, the same idea is visible in the representation type:
+
+```http
+Content-Type: application/vnd.ftgo.order.v1+json
+X-Service-Version: 1.1.1
+```
+
+## Scenario: PATCH, MINOR, MAJOR
+
+### 1.0.0 — original v1 contract
 
 ```json
 {
@@ -23,18 +55,41 @@ The original v1 contract contains:
 }
 ```
 
-A backward-compatible change adds an optional delivery estimate. This becomes API **1.1.0**:
+### 1.1.0 — MINOR evolution
+
+A backward-compatible feature adds the optional `deliveryEta` field:
 
 ```json
 {
   "id": "123",
   "status": "CREATED",
   "total": 42.5,
-  "deliveryEta": "18:30"
+  "deliveryEta": "8:05"
 }
 ```
 
-An existing v1 consumer can continue reading `id`, `status`, and `total` and ignore `deliveryEta`.
+Old v1 consumers can keep reading `id`, `status`, and `total` and ignore the additional field.
+
+This release intentionally contains a small formatting bug: the ETA is not zero-padded.
+
+### 1.1.1 — PATCH evolution
+
+The formatting bug is fixed:
+
+```json
+{
+  "id": "123",
+  "status": "CREATED",
+  "total": 42.5,
+  "deliveryEta": "08:05"
+}
+```
+
+The request URI and the response schema are unchanged from `1.1.0`. This is the important PATCH-version lesson:
+
+> **A patch release fixes the implementation without creating a new public API contract.**
+
+### 2.0.0 — MAJOR evolution
 
 A later redesign introduces breaking changes:
 
@@ -47,16 +102,14 @@ A later redesign introduces breaking changes:
     "currency": "EUR"
   },
   "delivery": {
-    "eta": "18:30"
+    "eta": "08:05"
   }
 }
 ```
 
-Existing v1 clients cannot read this contract unchanged, so it becomes API **2.0.0**.
+Existing v1 clients cannot consume this representation unchanged, so a new **v2** contract is required.
 
 ## Two versioning strategies, same contracts
-
-The gateway exposes the same v1 and v2 representations through two alternative public styles.
 
 ### URI versioning
 
@@ -75,7 +128,7 @@ GET /orders/123
 Accept: application/vnd.ftgo.order.v2+json
 ```
 
-The resource URI remains `/orders/123`; the representation is selected through HTTP content negotiation.
+The resource URI remains `/orders/123`; the major representation is selected through HTTP content negotiation.
 
 ```text
                     API Gateway
@@ -87,16 +140,16 @@ The resource URI remains `/orders/123`; the representation is selected through H
                    \           /
                     v         v
               Order API v1   Order API v2
-                 1.1.0          2.0.0
+             service release    2.0.0
+          1.0.0 / 1.1.0 / 1.1.1
 ```
-
-The concrete semantic version is returned in the `X-API-Version` response header.
 
 ## Project structure
 
 ```text
 api-versioning/
 ├── README.md
+├── Makefile
 ├── docker-compose.yml
 ├── gateway/
 │   └── nginx.conf
@@ -114,100 +167,184 @@ api-versioning/
     └── client_media_type.py
 ```
 
-## Run
+## Run the default stack
 
-From this directory:
+The default v1 service release is the latest compatible release, `1.1.1`:
 
 ```bash
 docker compose up -d --build
 ```
 
+Equivalent Make target:
+
+```bash
+make up
+```
+
 Inspect the gateway entry point:
 
 ```bash
-curl -s http://localhost:8083/
+curl -s -w '\n' http://localhost:8083/
 ```
 
-## 1. URI versioning — compatible v1 evolution
+## 1. Observe the MINOR evolution
 
-Call v1 and include response headers:
+Start the original `1.0.0` release:
 
 ```bash
-curl -i http://localhost:8083/v1/orders/123
+make run-v1.0.0
+```
+
+Call exactly the same public v1 endpoint:
+
+```bash
+curl -i -w '\n' http://localhost:8083/v1/orders/123
 ```
 
 Observe:
 
 ```text
-Content-Type: application/json
-X-API-Version: 1.1.0
+X-API-Version: 1
+X-Service-Version: 1.0.0
 ```
 
-and the additional optional field:
+and the original three-field representation.
+
+Now deploy the compatible `1.1.0` release:
+
+```bash
+make run-v1.1.0
+```
+
+Call the **same** endpoint again:
+
+```bash
+curl -i -w '\n' http://localhost:8083/v1/orders/123
+```
+
+Observe:
+
+```text
+X-API-Version: 1
+X-Service-Version: 1.1.0
+```
+
+and the new optional field:
 
 ```json
-"deliveryEta": "18:30"
+"deliveryEta": "8:05"
 ```
 
-Run the old v1 consumer:
+The public API is still **v1**. The service release changed from `1.0.0` to `1.1.0` because a backward-compatible feature was added.
+
+Run the old v1 consumer in Docker:
 
 ```bash
-python3 clients/client_v1.py
+make client-v1
 ```
 
-The client reads only the fields it knows and ignores the additional field. This is a **MINOR** evolution because the existing v1 contract remains usable.
+It still works because it reads only the fields it knows and ignores the new optional field. This illustrates a tolerant consumer; clients that reject unknown JSON fields would need their own compatibility policy.
 
-## 2. URI versioning — breaking v2 contract
+## 2. Observe a real PATCH release
+
+The `1.1.0` release has an intentionally visible bug: `deliveryEta` is not zero-padded.
+
+Deploy `1.1.1`:
 
 ```bash
-curl -i http://localhost:8083/v2/orders/123
+make run-v1.1.1
+```
+
+Call exactly the same endpoint:
+
+```bash
+curl -i -w '\n' http://localhost:8083/v1/orders/123
+```
+
+Now observe:
+
+```text
+X-API-Version: 1
+X-Service-Version: 1.1.1
+```
+
+and:
+
+```json
+"deliveryEta": "08:05"
+```
+
+Nothing changed from the client's API-versioning point of view:
+
+```text
+/v1/orders/123              unchanged
+fields                      unchanged from 1.1.0
+media type                  unchanged
+client code                 unchanged
+```
+
+Only the implementation release changed:
+
+```text
+1.1.0  ->  1.1.1
+ bug         fix
+```
+
+That is why there is **no `/v1.1.1` endpoint**.
+
+## 3. Observe the breaking MAJOR evolution
+
+```bash
+curl -i -w '\n' http://localhost:8083/v2/orders/123
 ```
 
 Observe:
 
 ```text
-Content-Type: application/json
-X-API-Version: 2.0.0
+X-API-Version: 2
+X-Service-Version: 2.0.0
 ```
 
-Run the v2 consumer:
+Run the v2 consumer in Docker:
 
 ```bash
-python3 clients/client_v2.py
+make client-v2
 ```
 
 To prove that the new representation breaks the old consumer:
 
 ```bash
-python3 clients/client_v1.py --url http://localhost:8083/v2/orders/123
+docker compose --profile tools run --rm client \
+  python client_v1.py --url http://api-gateway/v2/orders/123
 ```
 
 The v1 client reports an incompatible contract because the fields it expects are no longer present.
 
-## 3. Media-type versioning — same URI, v1 representation
+## 4. Media-type versioning — same URI, v1 representation
 
-Use the stable resource URI and request the v1 media type:
+The same v1 contract can be selected without putting the major version in the URI:
 
 ```bash
-curl -i \
+curl -i -w '\n' \
   -H 'Accept: application/vnd.ftgo.order.v1+json' \
   http://localhost:8083/orders/123
 ```
 
-Observe:
+With `1.1.1` active, observe:
 
 ```text
 Content-Type: application/vnd.ftgo.order.v1+json
-X-API-Version: 1.1.0
+X-API-Version: 1
+X-Service-Version: 1.1.1
 Vary: Accept
 ```
 
-The payload is the same v1 representation exposed by `/v1/orders/123`.
+If you switch back to `1.1.0`, the `Accept` value remains exactly the same; only `X-Service-Version` and the bug fix differ.
 
-## 4. Media-type versioning — same URI, v2 representation
+## 5. Media-type versioning — same URI, v2 representation
 
 ```bash
-curl -i \
+curl -i -w '\n' \
   -H 'Accept: application/vnd.ftgo.order.v2+json' \
   http://localhost:8083/orders/123
 ```
@@ -216,25 +353,24 @@ Observe:
 
 ```text
 Content-Type: application/vnd.ftgo.order.v2+json
-X-API-Version: 2.0.0
+X-API-Version: 2
+X-Service-Version: 2.0.0
 Vary: Accept
 ```
 
-The URI is unchanged, but the representation is now the breaking v2 contract.
-
-You can also use the small client included in the repository:
+You can also use the included Dockerized client:
 
 ```bash
-python3 clients/client_media_type.py --version 1
-python3 clients/client_media_type.py --version 2
+make client-media-v1
+make client-media-v2
 ```
 
-## 5. Unsupported media types return 406
+## 6. Unsupported media types return 406
 
-The media-type-versioned endpoint deliberately requires an explicit supported vendor media type:
+The media-type-versioned endpoint requires an explicit supported vendor media type:
 
 ```bash
-curl -i \
+curl -i -w '\n' \
   -H 'Accept: application/json' \
   http://localhost:8083/orders/123
 ```
@@ -245,9 +381,7 @@ Expected result:
 HTTP/1.1 406 Not Acceptable
 ```
 
-This makes the content-negotiation contract visible instead of silently choosing a major version.
-
-## 6. Why `Vary: Accept` matters
+## 7. Why `Vary: Accept` matters
 
 With media-type versioning, the same URI can produce different representations:
 
@@ -264,14 +398,25 @@ Vary: Accept
 
 This tells HTTP caches and intermediaries that responses for the same URI must be distinguished by the request's `Accept` header.
 
-## 7. Inspect the contracts explicitly
+## 8. Inspect the contracts explicitly
 
 ```bash
-curl -s http://localhost:8083/v1/contract
-curl -s http://localhost:8083/v2/contract
+curl -s -w '\n' http://localhost:8083/v1/contract
+curl -s -w '\n' http://localhost:8083/v2/contract
 ```
 
-The contract endpoints also report the associated vendor media type.
+The v1 contract endpoint reports both the public API major and the currently running service release.
+
+For example, with `1.1.1` active:
+
+```json
+{
+  "apiMajorVersion": "1",
+  "serviceVersion": "1.1.1",
+  "mediaType": "application/vnd.ftgo.order.v1+json",
+  "compatibility": "backward-compatible within v1"
+}
+```
 
 ## URI vs media-type versioning
 
@@ -285,52 +430,68 @@ The contract endpoints also report the associated vendor media type.
 | Caching concern | Separate URLs naturally separate responses | `Vary: Accept` is important |
 | Contract semantics | v1/v2 representation | Same v1/v2 representation |
 
-The important point is that **versioning the contract** and **where the version is encoded** are separate design decisions.
+The important point is that **versioning the contract** and **where the major version is encoded** are separate design decisions.
 
 ## Semantic versioning in this example
 
-| Change | Example | Version impact |
-|---|---|---|
-| Backward-compatible fix | Correct an implementation bug without changing the response contract | PATCH |
-| Backward-compatible addition | Add optional `deliveryEta` | MINOR |
-| Breaking contract change | Rename fields and change the representation of `total` | MAJOR |
+| Transition | What changes | API major | Meaning |
+|---|---|---:|---|
+| `1.0.0 -> 1.1.0` | Optional `deliveryEta` is added | `v1` | **MINOR**: compatible feature |
+| `1.1.0 -> 1.1.1` | ETA formatting bug is fixed | `v1` | **PATCH**: same contract |
+| `1.x -> 2.0.0` | Fields are renamed/restructured | `v2` | **MAJOR**: breaking contract |
 
-The public URI, when URI versioning is used, normally contains the **major** version only. Clients should not have to change URLs for every minor or patch release.
-
-Semantic software versions and public API major versions are related but distinct concepts:
+Conceptually:
 
 ```text
-implementation release 1.8.4  !=  API major version v1
+1.0.0
+  |
+  | backward-compatible feature
+  v
+1.1.0              MINOR
+  |
+  | bug fix, same schema
+  v
+1.1.1              PATCH
+  |
+  | breaking contract change
+  v
+2.0.0              MAJOR -> public API v2
 ```
 
-Multiple implementation releases can continue serving the same compatible API major version.
+## API versioning vs deployment versioning
 
-## Connection with deployment strategies
+API versioning and deployment versioning are related, but they are not the same thing.
 
-**API versioning and deployment versioning are related but are not the same thing.**
+A rolling or blue-green deployment can temporarily run different **service releases** at the same time. If those releases all expose API `v1`, they must remain compatible with the v1 contract during the rollout.
 
-During a **rolling deployment**, old and new application instances can temporarily run at the same time. If they expose the same major API version, their contract should remain compatible throughout the rollout.
+```text
+API v1
+  |- service 1.1.0
+  `- service 1.1.1
 
-During a **blue-green deployment**, two complete application environments coexist before traffic is switched. This helps validate a new implementation, but it does not remove the need to keep v1 available while existing clients still depend on it.
+same public major contract
+```
 
-For the deployment mechanics, compare this lab with:
-
-- [`../../cloud-native-examples/rolling/`](../../cloud-native-examples/rolling/)
-- [`../../cloud-native-examples/blue-green/`](../../cloud-native-examples/blue-green/)
-
-> **Deployment strategies control how implementations are replaced; API versioning controls how contracts evolve.**
+Deployment strategies control **how implementations are replaced**; API versioning controls **how published contracts evolve**.
 
 ## What to observe
 
-- v1 and v2 coexist behind the same gateway;
-- `deliveryEta` is a backward-compatible addition within v1;
-- the redesigned representation requires v2;
-- URI and `Accept` versioning expose the **same contracts** using different HTTP interfaces;
-- `Vary: Accept` is required to make media-type negotiation cache-aware;
-- an unsupported media type can be rejected with `406 Not Acceptable`;
+- `/v1` does not become `/v1.1.0` or `/v1.1.1`;
+- `1.0.0 -> 1.1.0` is a compatible feature addition;
+- `1.1.0 -> 1.1.1` is a true PATCH example with the same response schema;
+- `v2` is introduced only for a breaking contract change;
+- URI and `Accept` versioning expose the same major contracts through different HTTP interfaces;
+- `X-API-Version` reports the public major contract while `X-Service-Version` reports the concrete implementation release;
+- `Vary: Accept` makes content negotiation cache-aware;
 - tolerant v1 clients can ignore optional fields they do not understand.
 
 ## Clean up
+
+```bash
+make down
+```
+
+or:
 
 ```bash
 docker compose down -v

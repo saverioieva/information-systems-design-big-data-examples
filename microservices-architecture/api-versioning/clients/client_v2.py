@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import argparse
-import json
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+import json
 
 
 def main() -> int:
@@ -19,12 +19,14 @@ def main() -> int:
         with urlopen(request, timeout=5) as response:
             payload = json.load(response)
             api_version = response.headers.get("X-API-Version")
+            service_version = response.headers.get("X-Service-Version")
     except (HTTPError, URLError) as exc:
         print(f"Request failed: {exc}")
         return 1
 
     total = payload["totalAmount"]
-    print(f"API version: {api_version or 'unknown'}")
+    print(f"API major version: {api_version or 'unknown'}")
+    print(f"Service version: {service_version or 'unknown'}")
     print(
         f"Order {payload['id']}: {payload['orderStatus']} - "
         f"{total['value']:.2f} {total['currency']}"

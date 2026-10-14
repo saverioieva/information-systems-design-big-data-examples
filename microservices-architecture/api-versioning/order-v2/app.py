@@ -1,14 +1,14 @@
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
-API_VERSION = "2.0.0"
+API_MAJOR_VERSION = "2"
+SERVICE_VERSION = "2.0.0"
 MEDIA_TYPE = "application/vnd.ftgo.order.v2+json"
 
 app = FastAPI(
     title="FTGO Order API v2",
     description="Breaking v2 contract of the FTGO Order API.",
-    version=API_VERSION,
+    version=SERVICE_VERSION,
 )
 
 ORDERS = {
@@ -16,37 +16,32 @@ ORDERS = {
         "id": "123",
         "orderStatus": "CREATED",
         "totalAmount": {"value": 42.50, "currency": "EUR"},
-        "delivery": {"eta": "18:30"},
+        "delivery": {"eta": "08:05"},
     }
 }
 
 
-class Money(BaseModel):
-    value: float
-    currency: str
-
-
-class Delivery(BaseModel):
-    eta: str | None = None
-
-
-class OrderV2(BaseModel):
-    id: str
-    orderStatus: str
-    totalAmount: Money
-    delivery: Delivery
+def response_headers() -> dict[str, str]:
+    return {
+        "X-API-Version": API_MAJOR_VERSION,
+        "X-Service-Version": SERVICE_VERSION,
+    }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "apiVersion": API_VERSION}
+    return {
+        "status": "ok",
+        "apiVersion": API_MAJOR_VERSION,
+        "serviceVersion": SERVICE_VERSION,
+    }
 
 
 @app.get("/contract")
 def contract():
     return {
-        "major": 2,
-        "semanticVersion": API_VERSION,
+        "apiMajorVersion": API_MAJOR_VERSION,
+        "serviceVersion": SERVICE_VERSION,
         "mediaType": MEDIA_TYPE,
         "compatibility": "breaking change from v1",
         "changes": [
@@ -57,18 +52,15 @@ def contract():
     }
 
 
-@app.get("/orders/{order_id}", response_model=OrderV2)
-def get_order(order_id: str, request: Request, response: Response):
+@app.get("/orders/{order_id}")
+def get_order(order_id: str, request: Request):
     order = ORDERS.get(order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
 
+    headers = response_headers()
     if MEDIA_TYPE in request.headers.get("accept", ""):
-        return JSONResponse(
-            content=order,
-            media_type=MEDIA_TYPE,
-            headers={"X-API-Version": API_VERSION, "Vary": "Accept"},
-        )
+        headers["Vary"] = "Accept"
+        return JSONResponse(content=order, media_type=MEDIA_TYPE, headers=headers)
 
-    response.headers["X-API-Version"] = API_VERSION
-    return order
+    return JSONResponse(content=order, media_type="application/json", headers=headers)
