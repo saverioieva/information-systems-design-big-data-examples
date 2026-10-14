@@ -10,16 +10,20 @@ After completing these examples, you should be able to:
 
 - decompose a system into candidate microservices using **business capabilities** and **DDD subdomains**;
 - distinguish **service decomposition** from the internal architecture of a service;
-- evolve published REST contracts using **API versioning** and compatibility rules;
+- evolve published REST contracts using **API versioning**, compatibility rules, URI versioning, and `Accept`-based media-type versioning;
 - structure a service using **Hexagonal Architecture**, with explicit inbound/outbound ports and adapters;
 - distinguish **transport DTOs** from domain models;
-- use **OpenAPI** as a REST contract and generate clients from it;
+- use **OpenAPI** as a REST contract and generate clients or a disposable server skeleton from it;
 - understand synchronous REST-based RPI;
 - use **gRPC** and **Protocol Buffers** for internal service-to-service communication;
-- distinguish generated gRPC stubs/messages from application ports and domain objects;
+- distinguish generated gRPC stubs/messages/service plumbing from application ports, adapters, and domain objects;
 - compare the four gRPC interaction models: unary, server streaming, client streaming, and bidirectional streaming;
-- observe the difference between a public REST boundary and an internal gRPC boundary;
-- use Docker-based tooling to keep the labs reproducible.
+- observe the difference between a public REST boundary and internal REST/gRPC service-to-service boundaries;
+- compare REST/JSON and gRPC/Protocol Buffers for the same Unary use case using Prometheus metrics;
+- distinguish serialized application payload size from complete on-the-wire size;
+- use Docker-based tooling to keep the labs reproducible;
+- apply **timeouts, retries, circuit breakers, bulkheads, and fallbacks** to synchronous RPI calls without turning partial failures into cascading failures;
+- distinguish **application-level** from **platform-provided service discovery**, including self/third-party registration and client/server-side discovery.
 
 ## Recommended sequence
 
@@ -28,7 +32,9 @@ After completing these examples, you should be able to:
 | 1 | [`decomposition/`](decomposition/) | **Which services should exist?** |
 | 2 | [`api-versioning/`](api-versioning/) | **How can a published API evolve without unnecessarily breaking clients?** |
 | 3 | [`hexagonal-rpi-order-service/`](hexagonal-rpi-order-service/) | **How should one microservice be structured internally?** |
-| 4 | [`grpc-order-service/`](grpc-order-service/) | **How can separate services communicate efficiently using gRPC?** |
+| 4 | [`grpc-order-service/`](grpc-order-service/) | **How can separate services communicate through REST or gRPC, and how can the trade-offs be measured?** |
+| 5 | [`resilience-patterns/`](resilience-patterns/) | **How can synchronous service-to-service calls tolerate transient failures, persistent outages, and resource exhaustion?** |
+| 6 | [`service-discovery/`](service-discovery/) | **How are dynamic service instances registered, located, and selected at runtime?** |
 
 The progression is deliberately:
 
@@ -42,6 +48,10 @@ Published API contracts
 Internal service architecture
         ↓
 Service-to-service communication
+        ↓
+Resilience under partial failure
+        ↓
+Dynamic service discovery
 ```
 
 ---
@@ -104,14 +114,20 @@ backward-compatible change
 breaking API change
 ```
 
-and shows how multiple major API versions can coexist when necessary.
-
-Typical examples include:
+and shows how multiple major API versions can coexist when necessary. It also compares two ways to expose the same major contracts:
 
 ```text
+URI versioning
 /v1/orders/{id}
 /v2/orders/{id}
+
+Media-type versioning
+/orders/{id}
+Accept: application/vnd.ftgo.order.v1+json
+Accept: application/vnd.ftgo.order.v2+json
 ```
+
+The second style keeps the resource URI stable and uses HTTP content negotiation; responses include `Vary: Accept` so caches can distinguish representations.
 
 The main teaching point is:
 
@@ -153,6 +169,7 @@ This lab implements a small **Order Service** and connects several concepts:
 - OpenAPI as the published contract;
 - Swagger UI;
 - generated REST clients;
+- optional Dockerized OpenAPI server-skeleton generation for inspection;
 - Docker Compose.
 
 ### Core dependency structure
@@ -192,23 +209,18 @@ OrderUseCases
 
 Changing the web framework changes the **adapter**, not the application core.
 
-### DTOs vs domain models
+### DTOs, Pydantic, and domain models
 
-Pydantic is **not part of Hexagonal Architecture**.
+A **DTO (Data Transfer Object)** represents data crossing a boundary. It is shaped for communication, not for business behavior. In the REST adapter, request/response DTOs describe the JSON exchanged with clients; they are therefore different from domain entities.
 
-Pydantic models belong to the REST boundary and are used for:
+**Pydantic** is a Python library for parsing, validation, and serialization based on type annotations. It is **not part of Hexagonal Architecture**. FastAPI integrates it directly, so Pydantic `BaseModel` classes naturally become REST DTOs and can drive request validation, response serialization, and generated OpenAPI schemas.
 
-- HTTP request/response schemas;
-- validation;
-- serialization;
-- FastAPI/OpenAPI integration.
-
-They are transport DTOs, not domain entities.
+Flask, by contrast, does not require or automatically integrate Pydantic. In this lab the Flask adapter uses `request.get_json()`, plain dictionaries, explicit validation, and `jsonify()`. Pydantic could still be added to Flask, but it would be an explicit adapter choice.
 
 ```text
 HTTP / JSON
     ↓
-Pydantic DTO
+REST DTO / transport data
     ↓
 REST adapter
     ↓
@@ -217,7 +229,7 @@ OrderUseCases
 Application / Domain
 ```
 
-The domain model remains independent from FastAPI and Pydantic.
+For the FastAPI adapter, the REST DTOs are Pydantic models. For the Flask adapter, the same transport role is played by JSON dictionaries handled explicitly. In both cases, the domain model remains independent from FastAPI, Flask, and Pydantic.
 
 ### Docker-first workflow
 
@@ -225,17 +237,19 @@ The lab is designed so that the host machine only needs **Docker and Docker Comp
 
 Application execution, client execution, client generation, and tests can run in containers.
 
-Generated client code is written under:
+Generated artifacts are written under:
 
 ```text
 generated/
 ```
 
-but that directory is intentionally excluded from Git because generated artifacts can always be recreated from the OpenAPI contract.
+The lab can generate REST clients and, optionally, a FastAPI server skeleton from `order-api.yaml`. The server skeleton is used only to inspect what contract-first tooling can produce automatically; the running lab continues to use the handwritten Hexagonal adapters.
+
+The directory is intentionally excluded from Git because these artifacts can always be recreated from the OpenAPI contract.
 
 ---
 
-## 4. REST outside, gRPC inside
+## 4. REST outside, REST/gRPC inside
 
 Directory:
 
@@ -243,7 +257,9 @@ Directory:
 grpc-order-service/
 ```
 
-This lab demonstrates communication between **two different services**:
+This lab demonstrates communication between **two different services** while keeping the internal transport replaceable behind Hexagonal Architecture ports.
+
+The public boundary remains REST in both variants:
 
 ```text
 External Client
@@ -252,72 +268,58 @@ External Client
       v
 Checkout Service
       |
-      | gRPC / HTTP/2 / Protocol Buffers
-      v
-Inventory Service
+      +---- gRPC / HTTP/2 / Protocol Buffers ----> Inventory Service
+      |
+      +---- REST / HTTP / JSON -------------------> Inventory Service
 ```
 
-The main scenario is intentionally realistic:
-
-- the **Checkout Service** exposes a public REST API;
-- the Checkout application core depends on an `InventoryGateway` outbound port;
-- `GrpcInventoryClient` implements that port;
-- the generated gRPC stub is used only inside the adapter;
-- the **Inventory Service** exposes a gRPC server adapter;
-- that adapter invokes `InventoryUseCases`;
-- `InventoryApplicationService` implements the inbound port.
-
-### Checkout side
+Two deployments of the same Checkout code are used only to make the comparison explicit:
 
 ```text
-REST Adapter
-    ↓
-CheckoutUseCases
-    ↑
+:8000  Checkout + GrpcInventoryClient
+:8001  Checkout + RestInventoryClient
+```
+
+Both implement the same application-owned outbound port:
+
+```text
 CheckoutApplicationService
-    ↓
-InventoryGateway
-    ↑
-GrpcInventoryClient
-    ↓
-generated gRPC stub
+          |
+          v
+   InventoryGateway
+       ^          ^
+       |          |
+GrpcInventoryClient   RestInventoryClient
 ```
 
-### Inventory side
+The Checkout application core therefore does not depend on either transport.
+
+### Inventory side: two inbound adapters, one core
+
+Inventory exposes the same `InventoryUseCases` through two inbound adapters:
 
 ```text
-gRPC request
-    ↓
-GrpcInventoryAdapter
-    ↓
-InventoryUseCases
-    ↑
-InventoryApplicationService
-    ↓
-InventoryRepository
-    ↑
-InMemoryInventoryRepository
+GrpcInventoryAdapter ----+
+                         |
+                         v
+                 InventoryUseCases
+                         ^
+                         |
+RestInventoryAdapter ----+
+                         |
+                         v
+              InventoryApplicationService
+                         |
+                         v
+                 InventoryRepository
+                         ^
+                         |
+              InMemoryInventoryRepository
 ```
 
-The generated gRPC server interface is infrastructure code. It is **not** the application inbound port.
+This makes the Hexagonal Architecture idea concrete: replacing a transport adapter does not require changing the application core.
 
-Likewise, the generated gRPC client stub is **not** the Checkout application's outbound port. The application port is `InventoryGateway`.
-
-### Protocol Buffers and transport DTOs
-
-Generated Protocol Buffer message classes play a role similar to Pydantic models at the REST boundary:
-
-```text
-Pydantic models       → REST transport DTOs
-Protobuf messages     → gRPC transport DTOs
-Domain objects/ports  → application and domain
-```
-
-Transport-specific objects should remain outside the application core.
-
-### Four gRPC interaction models
-
-The `InventoryService` contract demonstrates:
+The REST adapter exposes only the availability operation needed for the Unary comparison. The gRPC contract still demonstrates all four interaction models:
 
 ```text
 Unary
@@ -326,58 +328,108 @@ Client Streaming
 Bidirectional Streaming
 ```
 
-The public REST API is used mainly to demonstrate a realistic **REST → unary gRPC** collaboration.
+### Protocol Buffers and transport DTOs
 
-The streaming interaction models are tested directly against the gRPC service rather than being artificially mapped to REST.
+Generated Protocol Buffer messages and Pydantic models are both transport-level DTOs:
+
+```text
+Pydantic models       → REST transport DTOs
+Protobuf messages     → gRPC transport DTOs
+Domain objects/ports  → application and domain
+```
+
+The generated gRPC stub is transport plumbing, not the Checkout application's outbound port. The port is `InventoryGateway`.
+
+The lab also includes an optional Dockerized code-generation profile that materializes `inventory_pb2.py` and `inventory_pb2_grpc.py` under `generated/` for inspection. This makes it possible to compare the generated `InventoryServiceServicer` with the handwritten `GrpcInventoryAdapter` and the framework-independent `InventoryUseCases` port without changing the runtime application.
+
+```text
+inventory.proto
+      ↓
+generated InventoryServiceServicer
+      ↓
+handwritten GrpcInventoryAdapter
+      ↓
+InventoryUseCases
+      ↓
+InventoryApplicationService
+```
+
+### Same use case, measurable protocol trade-offs
+
+The lab sends the same public request through two paths:
+
+```text
+POST :8000/checkouts
+    → Checkout core
+    → GrpcInventoryClient
+    → gRPC
+    → GrpcInventoryAdapter
+    → Inventory core
+
+POST :8001/checkouts
+    → Checkout core
+    → RestInventoryClient
+    → REST
+    → RestInventoryAdapter
+    → Inventory core
+```
+
+Prometheus collects metrics at the Checkout outbound-adapter boundary so that both protocols are observed from the same logical point. The lab compares:
+
+- client-observed Inventory-call latency;
+- serialized request payload size;
+- serialized response payload size;
+- request counts and outcomes.
+
+For payload size, the experiment intentionally compares:
+
+```text
+JSON serialized application payload
+vs
+Protocol Buffer serialized application payload
+```
+
+These values do not include every transport byte. HTTP headers, the gRPC 5-byte message prefix, and HTTP/2 framing are separate concerns.
+
+The intended lesson is **measure, do not assume**. On localhost and with tiny messages, latency differences can be noisy; the experiment is not designed to prove that gRPC is always faster.
 
 ### Postman
 
-Postman is useful for observing both boundaries of the lab:
+Postman can exercise all relevant boundaries:
 
 ```text
 Postman HTTP
-    ↓
-Checkout REST API
-    ↓
-unary gRPC
-    ↓
-Inventory Service
+    → Checkout :8000 or :8001
+
+Postman HTTP
+    → Inventory REST :8081
 
 Postman gRPC
-    ↓
-Inventory Service directly
+    → Inventory gRPC :50051
 ```
 
-For REST, Postman can import the OpenAPI document exposed by FastAPI or an explicit OpenAPI file.
+For REST, Postman can import the OpenAPI documents exposed by FastAPI. For gRPC, it can use `proto/inventory.proto` or gRPC Server Reflection.
 
-For gRPC, Postman can use:
+### Prometheus and Docker/TShark
 
-- `proto/inventory.proto`; or
-- gRPC Server Reflection.
-
-This allows the four gRPC interaction models to be exercised graphically.
-
-### Inspecting gRPC traffic with Docker/TShark
-
-The lab also includes an optional Docker-based TShark tool for inspecting traffic on port `50051` without installing Wireshark on the host.
+Prometheus is included as a teaching collector for the REST-vs-gRPC comparison. An optional Dockerized TShark tool captures only the Inventory application-adapter ports: REST on `8081` and gRPC on `50051`. Prometheus `/metrics` traffic is intentionally outside that capture, so metric collection does not pollute the protocol comparison.
 
 Conceptually:
 
 ```text
-Protocol Buffer message
-        ↓
-binary serialization
-        ↓
-gRPC message framing
-        ↓
-HTTP/2 DATA frames
+Prometheus
+→ latency + serialized application payload metrics
+
+TShark
+→ REST/JSON traffic on :8081
+→ gRPC/HTTP2 + binary Protobuf traffic on :50051
 ```
 
-The sniffer is a diagnostic/teaching tool only; it is not part of the application architecture.
+Both are diagnostic teaching tools, not application components.
 
 ### Persistence scope
 
-The Inventory Service intentionally uses:
+Inventory intentionally uses:
 
 ```text
 InventoryRepository
@@ -385,21 +437,137 @@ InventoryRepository
 InMemoryInventoryRepository
 ```
 
-There is therefore a real outbound port and a real concrete adapter, but **no external database** in this lab.
+There is a real outbound port and a concrete adapter, but no external database. Persistence was already demonstrated in the Hexagonal Architecture lab, so this example keeps the focus on transport adapters, service-to-service contracts, gRPC interaction models, and measurable communication trade-offs.
 
-This is deliberate: persistence was already demonstrated in the Hexagonal Architecture lab, while this example focuses on gRPC contracts, service-to-service communication, generated code, and interaction models.
+---
 
-A production-oriented extension could replace the adapter with:
+## 5. Resilience patterns for synchronous RPI
+
+Directory:
 
 ```text
-InventoryRepository
-        ↑
-PostgresInventoryRepository
-        ↓
-PostgreSQL
+resilience-patterns/
 ```
 
-without changing the application core.
+This lab combines **Hexagonal Architecture** with a real API Composition Gateway and four real downstream REST APIs:
+
+```text
+Order Service
+Kitchen Service
+Delivery Service
+Payment Service
+```
+
+The gateway application core depends only on outbound ports:
+
+```text
+OrderCompositionService
+      |
+      +--> OrderGateway
+      +--> KitchenGateway
+      +--> DeliveryGateway
+      +--> PaymentGateway
+      +--> PaymentCache
+```
+
+Concrete HTTP adapters implement those ports and apply the resilience stack:
+
+```text
+HTTP outbound adapter
+        ↓
+PyBreaker Circuit Breaker
+        ↓
+Tenacity Retry
+        ↓
+per-service Bulkhead
+        ↓
+HTTP timeout
+        ↓
+real downstream REST API
+```
+
+The responsibilities remain separate:
+
+- **Retry** handles transient failures with bounded exponential backoff;
+- **Circuit Breaker** stops forwarding calls after repeated complete-operation failures and later probes recovery;
+- **Bulkhead** isolates concurrency and queue capacity per downstream dependency;
+- **graceful degradation** is an application policy: optional data may be omitted or served from the Payment cache.
+
+The four downstream services are separate FastAPI applications/containers reachable directly on ports `8001`–`8004`, each with its own OpenAPI/Swagger UI. Teaching-only fault-injection endpoints let students reproduce transient failures, persistent outages, and slow-service overload without editing code.
+
+The workflow is Docker-first. Teaching-only diagnostic endpoints allow manual inspection of one dependency at a time, while `make bulkhead-demo` runs a self-contained Dockerized experiment that slows Kitchen, saturates only its bulkhead, probes Order/Delivery/Payment in parallel, reports the isolation result, and resets Kitchen afterwards.
+
+---
+
+## 6. Service discovery
+
+Directory:
+
+```text
+service-discovery/
+```
+
+This lab shows how clients avoid hardcoded instance addresses when service instances are created, removed, restarted, or relocated dynamically.
+
+It uses the same logical `order-service` with three running instances and compares the two patterns from the course slides.
+
+### Application-level discovery
+
+```text
+Order instances
+      |
+      | self-register
+      v
+   Consul
+      ^
+      | query
+      |
+Service Client
+      |
+      | selects one instance
+      v
+Order Service instance
+```
+
+Each Order Service instance registers its own current address and health-check endpoint. The client queries Consul, receives the healthy instances, performs client-side selection/load balancing, and sends the request directly to the selected instance.
+
+### Platform-provided discovery
+
+```text
+Order instances
+      |
+      | observed by
+      v
+Third-party Registrar
+      |
+      | updates
+      v
+   Consul
+      ^
+      | queried by
+      |
+Platform Router (Nginx)
+      ^
+      | logical service request
+      |
+    Client
+```
+
+The Order Service contains no registration logic. A dedicated registrar observes Docker containers and updates Consul, while Nginx resolves `order-service.service.consul` through Consul DNS and performs server-side load balancing. The client knows only one logical endpoint and never receives individual instance addresses.
+
+The lab deliberately keeps the Order Service internally simple: **service discovery and Hexagonal Architecture are separate concerns**. The focus here is where registration, lookup, instance selection, and routing responsibilities live.
+
+The workflow remains Docker-first:
+
+```bash
+make application-up
+make application-demo
+
+make platform-up
+make platform-demo
+```
+
+The Consul UI exposes registry state, while repeated calls through Nginx make server-side selection and load balancing observable from the returned instance identifier.
 
 ---
 
@@ -433,6 +601,17 @@ Adapters
 → technology-specific implementations
 ```
 
+### Generated transport code is not application architecture
+
+Both contract technologies can produce useful framework/protocol scaffolding:
+
+| Contract | Generated artifact to inspect | Handwritten architectural element |
+|---|---|---|
+| `order-api.yaml` | FastAPI server/controller skeleton | REST inbound adapter calling `OrderUseCases` |
+| `inventory.proto` | `InventoryServiceServicer`, stub, message classes | `GrpcInventoryAdapter` calling `InventoryUseCases` |
+
+The generator knows the transport contract. It does **not** decide the application's ports, domain model, use cases, repository abstractions, or dependency direction.
+
 ### Framework objects are adapter details
 
 Examples:
@@ -464,7 +643,16 @@ Docker Compose
 Postman        optional graphical client
 ```
 
-Additional diagnostic tools are provided through containers when practical.
+Additional diagnostic and code-generation tools are provided through optional Compose profiles when practical. The normal runtime is unchanged when those profiles are not selected.
+
+For the two contract-first code-generation demonstrations:
+
+```text
+hexagonal-rpi-order-service/  -> make generate-server-skeleton
+grpc-order-service/           -> make generate-grpc-skeleton
+```
+
+Both commands write only to Git-ignored `generated/` directories and are optional inspection steps.
 
 ---
 
@@ -472,4 +660,4 @@ Additional diagnostic tools are provided through containers when practical.
 
 These projects are teaching aids, not complete production systems.
 
-They deliberately keep the domain small so that architectural decisions remain visible. Concerns such as authentication, authorization, observability, distributed tracing, retries, service discovery, production database migrations, and deployment orchestration can be introduced separately without obscuring the concepts demonstrated here.
+They deliberately keep the domain small so that architectural decisions remain visible. Concerns such as authentication, authorization, distributed tracing, centralized logging, production database migrations, and production deployment orchestration can be introduced separately without obscuring the concepts demonstrated here.

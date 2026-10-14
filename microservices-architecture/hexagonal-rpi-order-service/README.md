@@ -287,7 +287,7 @@ main_flask.py
 From this directory:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 Services:
@@ -455,7 +455,7 @@ The same idea works on the outbound side with a fake repository.
 
 ```bash
 docker compose exec postgres \
-  psql -U orders -d orders -c '\\d orders'
+  psql -U orders -d orders -c '\d orders'
 ```
 
 ```bash
@@ -557,37 +557,3 @@ ORDER_API_BASE_URL=http://localhost:5000 python client/rpi_client.py
 ```bash
 docker compose down -v
 ```
-
-## Teaching sequence
-
-A useful classroom walkthrough is:
-
-```text
-1. Open OrderUseCases
-        ↓
-2. Show OrderApplicationService implements it
-        ↓
-3. Open FastAPI adapter
-   APIRouter -> OrderUseCases
-        ↓
-4. Open Flask adapter
-   Blueprint -> OrderUseCases
-        ↓
-5. Run the same POST through both adapters
-        ↓
-6. Show that the application core did not change
-        ↓
-7. Follow OrderRepository -> PostgreSQL adapter
-        ↓
-8. Run adapter tests with FakeOrderUseCases
-        ↓
-9. Return to OpenAPI: same external contract
-        ↓
-10. make generate-server-skeleton
-        ↓
-11. Inspect generated FastAPI transport code
-        ↓
-12. Compare it with the handwritten adapter and OrderUseCases
-```
-
-The key observation is not merely that FastAPI and Flask can expose the same endpoints. It is that **the application core has no reason to know which framework is currently connected to its inbound port**. Code generation can automate transport scaffolding, but it does not define the application's ports, domain model, or dependency direction.

@@ -1,7 +1,9 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 API_VERSION = "2.0.0"
+MEDIA_TYPE = "application/vnd.ftgo.order.v2+json"
 
 app = FastAPI(
     title="FTGO Order API v2",
@@ -45,6 +47,7 @@ def contract():
     return {
         "major": 2,
         "semanticVersion": API_VERSION,
+        "mediaType": MEDIA_TYPE,
         "compatibility": "breaking change from v1",
         "changes": [
             "status renamed to orderStatus",
@@ -55,10 +58,17 @@ def contract():
 
 
 @app.get("/orders/{order_id}", response_model=OrderV2)
-def get_order(order_id: str, response: Response):
+def get_order(order_id: str, request: Request, response: Response):
     order = ORDERS.get(order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    if MEDIA_TYPE in request.headers.get("accept", ""):
+        return JSONResponse(
+            content=order,
+            media_type=MEDIA_TYPE,
+            headers={"X-API-Version": API_VERSION, "Vary": "Accept"},
+        )
 
     response.headers["X-API-Version"] = API_VERSION
     return order

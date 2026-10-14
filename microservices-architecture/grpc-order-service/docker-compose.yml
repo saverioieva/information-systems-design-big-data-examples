@@ -127,7 +127,7 @@ services:
     profiles: ["tools"]
     command:
       - -i
-      - any
+      - eth0
       - -f
       - tcp port 50051 or tcp port 8081
       - -d

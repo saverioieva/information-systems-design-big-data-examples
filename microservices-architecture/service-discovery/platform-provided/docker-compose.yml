@@ -1,0 +1,88 @@
+x-order-service: &order-service
+  build:
+    context: ../common/order-service
+  environment:
+    SERVICE_NAME: order-service
+    SELF_REGISTER: "false"
+  labels:
+    discovery.enabled: "true"
+    discovery.name: order-service
+    discovery.port: "8000"
+
+services:
+  consul:
+    image: hashicorp/consul:1.21
+    command: ["agent", "-dev", "-client=0.0.0.0", "-ui"]
+    ports:
+      - "8500:8500"
+
+  registrar:
+    build:
+      context: ./registrar
+    environment:
+      CONSUL_HTTP_ADDR: http://consul:8500
+      POLL_INTERVAL: "2"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - consul
+
+  nginx-router:
+    image: nginx:1.27.3-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - consul
+      - registrar
+
+  order-1:
+    <<: *order-service
+    environment:
+      SERVICE_NAME: order-service
+      INSTANCE_NAME: order-1
+      SELF_REGISTER: "false"
+    labels:
+      discovery.enabled: "true"
+      discovery.name: order-service
+      discovery.instance: order-1
+      discovery.port: "8000"
+
+  order-2:
+    <<: *order-service
+    environment:
+      SERVICE_NAME: order-service
+      INSTANCE_NAME: order-2
+      SELF_REGISTER: "false"
+    labels:
+      discovery.enabled: "true"
+      discovery.name: order-service
+      discovery.instance: order-2
+      discovery.port: "8000"
+
+  order-3:
+    <<: *order-service
+    environment:
+      SERVICE_NAME: order-service
+      INSTANCE_NAME: order-3
+      SELF_REGISTER: "false"
+    labels:
+      discovery.enabled: "true"
+      discovery.name: order-service
+      discovery.instance: order-3
+      discovery.port: "8000"
+
+  demo-client:
+    profiles: ["tools"]
+    build:
+      context: ./demo-client
+    environment:
+      ROUTER_URL: http://nginx-router
+      ORDER_ID: "1001"
+      REQUEST_COUNT: "9"
+    depends_on:
+      - nginx-router
+      - order-1
+      - order-2
+      - order-3

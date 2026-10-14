@@ -1,0 +1,68 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      ORDER_SERVICE_URL: http://order-service:8001
+      KITCHEN_SERVICE_URL: http://kitchen-service:8002
+      DELIVERY_SERVICE_URL: http://delivery-service:8003
+      PAYMENT_SERVICE_URL: http://payment-service:8004
+      DOWNSTREAM_TIMEOUT_S: "0.8"
+      RETRY_MAX_ATTEMPTS: "3"
+      RETRY_INITIAL_BACKOFF_S: "0.2"
+      CIRCUIT_FAILURE_THRESHOLD: "2"
+      CIRCUIT_RECOVERY_TIMEOUT_S: "5"
+      BULKHEAD_MAX_CONCURRENCY: "2"
+      BULKHEAD_MAX_QUEUE: "2"
+    depends_on:
+      - order-service
+      - kitchen-service
+      - delivery-service
+      - payment-service
+
+  order-service:
+    build:
+      context: .
+      dockerfile: services/order/Dockerfile
+    ports:
+      - "8001:8001"
+
+  kitchen-service:
+    build:
+      context: .
+      dockerfile: services/kitchen/Dockerfile
+    ports:
+      - "8002:8002"
+
+  delivery-service:
+    build:
+      context: .
+      dockerfile: services/delivery/Dockerfile
+    ports:
+      - "8003:8003"
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: services/payment/Dockerfile
+    ports:
+      - "8004:8004"
+
+  bulkhead-demo:
+    profiles: ["tools"]
+    image: python:3.12-slim
+    working_dir: /tools
+    volumes:
+      - ./tools:/tools:ro
+    environment:
+      GATEWAY_URL: http://gateway:8000
+      KITCHEN_ADMIN_URL: http://kitchen-service:8002
+      REQUESTS: "12"
+      WORKERS: "12"
+      KITCHEN_DELAY_MS: "600"
+    command: ["python", "/tools/bulkhead_demo.py"]
+    depends_on:
+      - gateway

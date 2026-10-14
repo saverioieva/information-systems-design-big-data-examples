@@ -1,0 +1,54 @@
+services:
+  consul:
+    image: hashicorp/consul:1.21
+    command: ["agent", "-dev", "-client=0.0.0.0", "-ui"]
+    ports:
+      - "8500:8500"
+
+  order-1:
+    build:
+      context: ../common/order-service
+    environment:
+      SERVICE_NAME: order-service
+      INSTANCE_NAME: order-1
+      SELF_REGISTER: "true"
+      CONSUL_HTTP_ADDR: http://consul:8500
+    depends_on:
+      - consul
+
+  order-2:
+    build:
+      context: ../common/order-service
+    environment:
+      SERVICE_NAME: order-service
+      INSTANCE_NAME: order-2
+      SELF_REGISTER: "true"
+      CONSUL_HTTP_ADDR: http://consul:8500
+    depends_on:
+      - consul
+
+  order-3:
+    build:
+      context: ../common/order-service
+    environment:
+      SERVICE_NAME: order-service
+      INSTANCE_NAME: order-3
+      SELF_REGISTER: "true"
+      CONSUL_HTTP_ADDR: http://consul:8500
+    depends_on:
+      - consul
+
+  client:
+    profiles: ["tools"]
+    build:
+      context: ./client
+    environment:
+      CONSUL_HTTP_ADDR: http://consul:8500
+      SERVICE_NAME: order-service
+      ORDER_ID: "1001"
+      REQUEST_COUNT: "9"
+    depends_on:
+      - consul
+      - order-1
+      - order-2
+      - order-3

@@ -2,19 +2,16 @@
 
 ## Goal
 
-Show how an API can evolve without breaking existing consumers.
+Show how an API can evolve without breaking existing consumers, and compare two common ways to expose major API versions:
 
-This lab focuses on three ideas:
+- **URI versioning** — the major version is part of the path;
+- **media-type versioning** — the resource URI stays stable and the client selects the representation through the HTTP `Accept` header.
 
-- use **semantic versioning** to reason about compatible and incompatible contract changes;
-- expose different **major API versions** side by side;
-- understand why compatibility matters when old and new service implementations coexist during deployment.
+The lab also uses **semantic versioning** to distinguish compatible and incompatible contract changes.
 
-The example intentionally keeps the business logic small so that the API contract remains the main focus.
+> **Scope:** this lab intentionally focuses on API contract evolution. It does **not** model Hexagonal Architecture; that concern is isolated in the dedicated Hexagonal Architecture lab.
 
 ## Scenario
-
-Assume FTGO already exposes an Order API.
 
 The original v1 contract contains:
 
@@ -37,7 +34,7 @@ A backward-compatible change adds an optional delivery estimate. This becomes AP
 }
 ```
 
-An existing v1 consumer can continue reading `id`, `status`, and `total` and simply ignore `deliveryEta`.
+An existing v1 consumer can continue reading `id`, `status`, and `total` and ignore `deliveryEta`.
 
 A later redesign introduces breaking changes:
 
@@ -55,28 +52,42 @@ A later redesign introduces breaking changes:
 }
 ```
 
-Because existing v1 clients cannot read this contract unchanged, it is exposed as API **2.0.0**.
+Existing v1 clients cannot read this contract unchanged, so it becomes API **2.0.0**.
 
-## Architecture
+## Two versioning strategies, same contracts
+
+The gateway exposes the same v1 and v2 representations through two alternative public styles.
+
+### URI versioning
 
 ```text
-Client v1 ---- /v1 ----+
-                       |
-                       v
-                  API Gateway
-                       |
-Client v2 ---- /v2 ----+
-                   /         \
-                  v           v
-          Order API v1     Order API v2
-             1.1.0            2.0.0
+GET /v1/orders/123  -> v1 representation
+GET /v2/orders/123  -> v2 representation
 ```
 
-The gateway exposes only the **major version** in the public URI:
+### Media-type versioning
 
 ```text
-GET /v1/orders/123
-GET /v2/orders/123
+GET /orders/123
+Accept: application/vnd.ftgo.order.v1+json
+
+GET /orders/123
+Accept: application/vnd.ftgo.order.v2+json
+```
+
+The resource URI remains `/orders/123`; the representation is selected through HTTP content negotiation.
+
+```text
+                    API Gateway
+                   /           \
+                  /             \
+          URI versioning    Accept versioning
+          /v1 or /v2         /orders/123
+                  \             /
+                   \           /
+                    v         v
+              Order API v1   Order API v2
+                 1.1.0          2.0.0
 ```
 
 The concrete semantic version is returned in the `X-API-Version` response header.
@@ -99,27 +110,9 @@ api-versioning/
 │   └── requirements.txt
 └── clients/
     ├── client_v1.py
-    └── client_v2.py
+    ├── client_v2.py
+    └── client_media_type.py
 ```
-
-
-## Why Pydantic appears in this example
-
-The v1 and v2 services are implemented with FastAPI and use Pydantic models such as `OrderV1`, `OrderV2`, `Money`, and `Delivery`. In this lab those classes describe the **published HTTP response schemas**. FastAPI uses them through `response_model` to validate/serialize responses and to generate the corresponding OpenAPI schema.
-
-```text
-implementation data
-      ↓
-Pydantic API schema
-      ↓
-JSON response
-      ↓
-consumer
-```
-
-Here Pydantic is useful because the lesson is specifically about **contract shape and compatibility**. These classes should not be interpreted as domain entities or as an application-core architecture.
-
-> **Scope:** this example intentionally does not apply Hexagonal Architecture. API versioning concerns the **contract seen by consumers**; Ports and Adapters concern the **internal dependency structure** of a service and are introduced separately in [`../hexagonal-rpi-order-service/`](../hexagonal-rpi-order-service/).
 
 ## Run
 
@@ -129,15 +122,15 @@ From this directory:
 docker compose up -d --build
 ```
 
-Check the gateway:
+Inspect the gateway entry point:
 
 ```bash
 curl -s http://localhost:8083/
 ```
 
-## 1. Inspect the backward-compatible v1 evolution
+## 1. URI versioning — compatible v1 evolution
 
-Call v1 and include the response headers:
+Call v1 and include response headers:
 
 ```bash
 curl -i http://localhost:8083/v1/orders/123
@@ -146,6 +139,7 @@ curl -i http://localhost:8083/v1/orders/123
 Observe:
 
 ```text
+Content-Type: application/json
 X-API-Version: 1.1.0
 ```
 
@@ -161,13 +155,9 @@ Run the old v1 consumer:
 python3 clients/client_v1.py
 ```
 
-The client reads only the fields it knows and reports that the additional field was ignored.
+The client reads only the fields it knows and ignores the additional field. This is a **MINOR** evolution because the existing v1 contract remains usable.
 
-This demonstrates a **MINOR** evolution: the API added functionality while preserving the existing v1 contract.
-
-## 2. Inspect the breaking v2 contract
-
-Call the new major version:
+## 2. URI versioning — breaking v2 contract
 
 ```bash
 curl -i http://localhost:8083/v2/orders/123
@@ -176,10 +166,9 @@ curl -i http://localhost:8083/v2/orders/123
 Observe:
 
 ```text
+Content-Type: application/json
 X-API-Version: 2.0.0
 ```
-
-The contract now uses `orderStatus`, a structured `totalAmount`, and a `delivery` object.
 
 Run the v2 consumer:
 
@@ -187,26 +176,116 @@ Run the v2 consumer:
 python3 clients/client_v2.py
 ```
 
-## 3. Prove that the v2 contract breaks a v1 client
-
-Point the v1 client at the v2 endpoint:
+To prove that the new representation breaks the old consumer:
 
 ```bash
 python3 clients/client_v1.py --url http://localhost:8083/v2/orders/123
 ```
 
-The client reports an incompatible contract because the fields it expects are no longer present.
+The v1 client reports an incompatible contract because the fields it expects are no longer present.
 
-This is why the change requires a new **MAJOR** API version rather than silently replacing v1.
+## 3. Media-type versioning — same URI, v1 representation
 
-## 4. Inspect the contracts explicitly
+Use the stable resource URI and request the v1 media type:
+
+```bash
+curl -i \
+  -H 'Accept: application/vnd.ftgo.order.v1+json' \
+  http://localhost:8083/orders/123
+```
+
+Observe:
+
+```text
+Content-Type: application/vnd.ftgo.order.v1+json
+X-API-Version: 1.1.0
+Vary: Accept
+```
+
+The payload is the same v1 representation exposed by `/v1/orders/123`.
+
+## 4. Media-type versioning — same URI, v2 representation
+
+```bash
+curl -i \
+  -H 'Accept: application/vnd.ftgo.order.v2+json' \
+  http://localhost:8083/orders/123
+```
+
+Observe:
+
+```text
+Content-Type: application/vnd.ftgo.order.v2+json
+X-API-Version: 2.0.0
+Vary: Accept
+```
+
+The URI is unchanged, but the representation is now the breaking v2 contract.
+
+You can also use the small client included in the repository:
+
+```bash
+python3 clients/client_media_type.py --version 1
+python3 clients/client_media_type.py --version 2
+```
+
+## 5. Unsupported media types return 406
+
+The media-type-versioned endpoint deliberately requires an explicit supported vendor media type:
+
+```bash
+curl -i \
+  -H 'Accept: application/json' \
+  http://localhost:8083/orders/123
+```
+
+Expected result:
+
+```text
+HTTP/1.1 406 Not Acceptable
+```
+
+This makes the content-negotiation contract visible instead of silently choosing a major version.
+
+## 6. Why `Vary: Accept` matters
+
+With media-type versioning, the same URI can produce different representations:
+
+```text
+/orders/123 + Accept: ...v1+json -> v1
+/orders/123 + Accept: ...v2+json -> v2
+```
+
+The response therefore contains:
+
+```http
+Vary: Accept
+```
+
+This tells HTTP caches and intermediaries that responses for the same URI must be distinguished by the request's `Accept` header.
+
+## 7. Inspect the contracts explicitly
 
 ```bash
 curl -s http://localhost:8083/v1/contract
 curl -s http://localhost:8083/v2/contract
 ```
 
-The endpoints summarize why `1.1.0` is compatible within v1 and why `2.0.0` is a breaking change.
+The contract endpoints also report the associated vendor media type.
+
+## URI vs media-type versioning
+
+| Aspect | URI versioning | Media-type versioning |
+|---|---|---|
+| Example | `/v1/orders/123` | `/orders/123` + `Accept: ...v1+json` |
+| Resource URI | Changes by major version | Remains stable |
+| Version visibility | Explicit in URL | Explicit in HTTP headers |
+| Browser/manual testing | Very simple | Requires setting `Accept` |
+| Routing | Path-based | Content negotiation |
+| Caching concern | Separate URLs naturally separate responses | `Vary: Accept` is important |
+| Contract semantics | v1/v2 representation | Same v1/v2 representation |
+
+The important point is that **versioning the contract** and **where the version is encoded** are separate design decisions.
 
 ## Semantic versioning in this example
 
@@ -216,7 +295,15 @@ The endpoints summarize why `1.1.0` is compatible within v1 and why `2.0.0` is a
 | Backward-compatible addition | Add optional `deliveryEta` | MINOR |
 | Breaking contract change | Rename fields and change the representation of `total` | MAJOR |
 
-The public URI normally contains the **major** version only. Clients should not have to change URLs for every minor or patch release.
+The public URI, when URI versioning is used, normally contains the **major** version only. Clients should not have to change URLs for every minor or patch release.
+
+Semantic software versions and public API major versions are related but distinct concepts:
+
+```text
+implementation release 1.8.4  !=  API major version v1
+```
+
+Multiple implementation releases can continue serving the same compatible API major version.
 
 ## Connection with deployment strategies
 
@@ -224,24 +311,24 @@ The public URI normally contains the **major** version only. Clients should not 
 
 During a **rolling deployment**, old and new application instances can temporarily run at the same time. If they expose the same major API version, their contract should remain compatible throughout the rollout.
 
-During a **blue-green deployment**, two complete application environments coexist before traffic is switched. This makes it easier to validate a new implementation, but it does not remove the need for API compatibility when existing clients still depend on v1.
+During a **blue-green deployment**, two complete application environments coexist before traffic is switched. This helps validate a new implementation, but it does not remove the need to keep v1 available while existing clients still depend on it.
 
 For the deployment mechanics, compare this lab with:
 
 - [`../../cloud-native-examples/rolling/`](../../cloud-native-examples/rolling/)
 - [`../../cloud-native-examples/blue-green/`](../../cloud-native-examples/blue-green/)
 
-A useful rule is:
-
 > **Deployment strategies control how implementations are replaced; API versioning controls how contracts evolve.**
 
 ## What to observe
 
-- v1 and v2 can coexist behind the same gateway.
-- A compatible change does **not** require a new major URI.
-- A breaking contract is published separately instead of silently replacing the old contract.
-- Tolerant clients can ignore optional fields they do not understand.
-- Compatibility is especially important while multiple implementation versions coexist during deployment.
+- v1 and v2 coexist behind the same gateway;
+- `deliveryEta` is a backward-compatible addition within v1;
+- the redesigned representation requires v2;
+- URI and `Accept` versioning expose the **same contracts** using different HTTP interfaces;
+- `Vary: Accept` is required to make media-type negotiation cache-aware;
+- an unsupported media type can be rejected with `406 Not Acceptable`;
+- tolerant v1 clients can ignore optional fields they do not understand.
 
 ## Clean up
 
@@ -251,4 +338,4 @@ docker compose down -v
 
 ## Scope
 
-This example is intentionally minimal. Pydantic is used only to make the HTTP contract explicit; it is not intended as a domain-modeling pattern. Production API lifecycle management also involves deprecation policies, observability, authentication, documentation, schema governance, and a migration plan for retiring old versions.
+This example is intentionally minimal. Production API lifecycle management also involves deprecation policies, observability, authentication, documentation, schema governance, client migration, and retirement policies for old versions.
