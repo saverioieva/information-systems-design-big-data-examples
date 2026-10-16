@@ -20,6 +20,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Order'
+        '400':
+          description: Invalid order input
   /orders/{orderId}:
     get:
       operationId: getOrder

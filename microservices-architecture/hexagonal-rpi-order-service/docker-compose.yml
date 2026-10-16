@@ -78,6 +78,35 @@ services:
       - python-fastapi
       - -o
       - /local/generated/openapi-fastapi-server
+      - -p
+      - packageName=openapi_server
+
+  order-generated:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    profiles: ["generated"]
+    command: ["uvicorn", "order_service.main_generated:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://orders:orders@postgres:5432/orders
+      PYTHONPATH: /app/src:/generated/src
+    volumes:
+      - ./generated/openapi-fastapi-server/src:/generated/src:ro
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+  generated-client:
+    image: python:3.12-slim
+    profiles: ["generated"]
+    working_dir: /demo
+    command: ["python", "/demo/test_generated_server.py"]
+    volumes:
+      - ./scripts:/demo:ro
+    depends_on:
+      - order-generated
 
 volumes:
   order_db:

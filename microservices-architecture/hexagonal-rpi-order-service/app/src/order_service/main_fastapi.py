@@ -3,14 +3,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from order_service.adapters.inbound.fastapi.routes import build_order_router
-from order_service.adapters.outbound.postgres.repository import PostgresOrderRepository
-from order_service.application.services.order_service import OrderApplicationService
-from order_service.infrastructure.database import SessionFactory, create_schema
+from order_service.bootstrap import build_order_use_cases
+from order_service.infrastructure.database import create_schema
 
 
-# Composition root for the FastAPI inbound adapter.
-repository = PostgresOrderRepository(SessionFactory)
-order_service = OrderApplicationService(repository)
+# Composition root for the handwritten FastAPI inbound adapter.
+order_service = build_order_use_cases()
 
 
 @asynccontextmanager

@@ -15,6 +15,8 @@ The main teaching point is simple:
 
 > Replacing FastAPI with Flask changes the inbound adapter, not the application core.
 
+> **Teaching note:** `order-fastapi` and `order-flask` are two alternative deployments of the same logical **Order Service**. They are both started only to compare interchangeable inbound adapters. They must not be interpreted as two different microservices or as a rule that one adapter requires one service.
+
 ## Architecture
 
 ```text
@@ -100,8 +102,12 @@ hexagonal-rpi-order-service/
 │       │       └── repository.py
 │       ├── infrastructure/
 │       │   └── database.py
+│       ├── bootstrap.py
+│       ├── adapters/inbound/openapi_generated/
+│       │   └── default_api.py
 │       ├── main_fastapi.py
 │       ├── main_flask.py
+│       ├── main_generated.py
 │       └── main.py
 ├── client/
 │   └── rpi_client.py
@@ -111,12 +117,13 @@ hexagonal-rpi-order-service/
 ├── scripts/
 │   ├── compare-rest-adapters.sh
 │   ├── generate-swagger-client.sh
-│   └── generate-openapi-client.sh
+│   ├── generate-openapi-client.sh
+│   └── test_generated_server.py
 ├── Makefile
 └── docker-compose.yml
 ```
 
-The `generated/` directory is intentionally not shown because it is created on demand and is excluded from Git. It can contain generated clients and the optional generated server skeleton used only for inspection.
+The `generated/` directory is intentionally not shown because it is created on demand and is excluded from Git. The final exercise generates a FastAPI server skeleton there and **actually runs it as an alternative inbound adapter**. Everything under `generated/` remains disposable.
 
 ## 1. Start from the inbound port
 
@@ -287,7 +294,7 @@ main_flask.py
 From this directory:
 
 ```bash
-docker compose up --build -d
+docker compose up --build
 ```
 
 Services:
@@ -455,7 +462,7 @@ The same idea works on the outbound side with a fake repository.
 
 ```bash
 docker compose exec postgres \
-  psql -U orders -d orders -c '\d orders'
+  psql -U orders -d orders -c '\\d orders'
 ```
 
 ```bash
@@ -465,20 +472,14 @@ docker compose exec postgres \
 
 The SQLAlchemy model is an outbound-adapter detail. The domain `Order` object does not depend on SQLAlchemy.
 
-## 12. Optional: generate and inspect a REST server skeleton
+## 12. Final exercise: run the generated server skeleton as a real inbound adapter
 
-The OpenAPI contract can generate not only clients but also a **server-side transport skeleton**. This is useful for showing what code generation can automate without confusing generated framework code with the application architecture.
+The final step closes the contract-first workflow: the OpenAPI contract generates the HTTP/FastAPI transport layer, and that generated layer is connected to the **same handwritten application core** used by the FastAPI and Flask adapters.
 
-The generator runs entirely in Docker through the optional `codegen` Compose profile:
+The generator runs entirely in Docker:
 
 ```bash
 make generate-server-skeleton
-```
-
-or equivalently:
-
-```bash
-docker compose --profile codegen run --rm openapi-server-generator
 ```
 
 The generated project is written to:
@@ -487,41 +488,142 @@ The generated project is written to:
 generated/openapi-fastapi-server/
 ```
 
-The flow is:
+OpenAPI Generator `7.26.0` generates both the FastAPI routes and a `BaseDefaultApi` extension point. The handwritten adapter subclasses that generated base class, while remaining outside `generated/`:
+
+```text
+app/src/order_service/adapters/inbound/openapi_generated/default_api.py
+```
+
+The runtime path is therefore:
 
 ```text
 openapi/order-api.yaml
         |
-        | OpenAPI Generator container
+        | OpenAPI Generator
         v
-generated FastAPI server skeleton
+generated/openapi_server
+  generated FastAPI routes
+  generated request/response models
+  generated BaseDefaultApi
+        ^
+        | subclassed by
+DefaultApiImpl                     handwritten inbound adapter
         |
-        | inspect / compare
         v
-handwritten FastAPI adapter
+OrderUseCases                      inbound port
+        ^
+        | implements
+OrderApplicationService            application core
         |
         v
-OrderUseCases
+OrderRepository                    outbound port
+        ^
+        | implements
+PostgresOrderRepository            outbound adapter
+        |
+        v
+PostgreSQL
 ```
 
-The generated skeleton contains HTTP/framework-facing code derived from the contract: routes, request/response models, and server plumbing. It does **not** know the Hexagonal Architecture chosen for this service and it does not invent `OrderUseCases`, `OrderApplicationService`, or `OrderRepository`.
+The handwritten generated-skeleton adapter is intentionally thin. Conceptually it performs only transport translation:
 
-That distinction is the teaching point:
+```python
+class DefaultApiImpl(BaseDefaultApi):
+    async def create_order(self, create_order_request):
+        payload = create_order_request.model_dump(by_alias=True)
+        order = _use_cases.create_order(
+            payload["restaurantId"],
+            Decimal(str(payload["total"])),
+        )
+        return _to_transport_dict(order)
+```
+
+`BaseDefaultApi` and the request/response transport models come from the generated skeleton. `DefaultApiImpl` remains handwritten and delegates to `OrderUseCases`; `OrderApplicationService` remains the application core.
+
+### Run the generated adapter
+
+Use:
+
+```bash
+make run-generated-server
+```
+
+This target:
+
+1. regenerates the FastAPI server skeleton from `order-api.yaml`;
+2. stops the handwritten FastAPI/Flask deployments if they are running, so port `8000` can represent the same logical Order Service;
+3. starts PostgreSQL and the generated-server deployment;
+4. runs `order_service.main_generated:app`, a tiny composition root that first imports `DefaultApiImpl` (registering the subclass) and then exposes the generated `openapi_server.main:app`; both `/generated/src` and `/app/src` are on `PYTHONPATH`.
+
+The API is available at:
 
 ```text
-generated controller / route skeleton   -> transport/framework boundary
-handwritten FastAPI adapter             -> inbound adapter
-OrderUseCases                            -> application inbound port
-OrderApplicationService                 -> application core
+http://localhost:8000
 ```
 
-> **Important:** the generated server skeleton is an inspection artifact only. The running lab continues to use the handwritten FastAPI and Flask adapters. Generating or deleting `generated/` does not change the normal `docker compose up` runtime.
+Run a complete smoke test with:
 
-Because `generated/` is in `.gitignore`, generated framework code is reproducible from `order-api.yaml` and is not committed. To remove all generated artifacts:
+```bash
+make generated-demo
+```
+
+The smoke test itself also runs in Docker, so no host Python or `curl` installation is required.
+
+Or manually:
+
+```bash
+curl -i -X POST http://localhost:8000/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"restaurantId":42,"total":25.50}'
+```
+
+Then retrieve the returned id:
+
+```bash
+curl -i http://localhost:8000/orders/1
+```
+
+The important observation is that the request now **really enters through generated routing code**:
+
+```text
+HTTP request
+     ↓
+generated FastAPI route
+     ↓
+generated transport DTO
+     ↓
+DefaultApiImpl
+     ↓
+OrderUseCases
+     ↓
+OrderApplicationService
+     ↓
+OrderRepository
+     ↓
+PostgresOrderRepository
+```
+
+> **Key point:** OpenAPI Generator generates the transport boundary, not the Hexagonal Architecture. The generated code knows the HTTP contract; the handwritten adapter connects that contract to the application port.
+
+### Regenerate safely
+
+You can remove and regenerate the complete transport skeleton:
 
 ```bash
 make clean-generated
+make generate-server-skeleton
 ```
+
+without modifying:
+
+```text
+domain/
+application/
+adapters/
+bootstrap.py
+```
+
+This is why the lab treats `generated/` as disposable and keeps business logic and ports outside it.
 
 ## 13. Generate a REST client
 
@@ -557,3 +659,41 @@ ORDER_API_BASE_URL=http://localhost:5000 python client/rpi_client.py
 ```bash
 docker compose down -v
 ```
+
+## Teaching sequence
+
+A useful classroom walkthrough is:
+
+```text
+1. Open OrderUseCases
+        ↓
+2. Show OrderApplicationService implements it
+        ↓
+3. Open FastAPI adapter
+   APIRouter -> OrderUseCases
+        ↓
+4. Open Flask adapter
+   Blueprint -> OrderUseCases
+        ↓
+5. Run the same POST through both adapters
+        ↓
+6. Show that the application core did not change
+        ↓
+7. Follow OrderRepository -> PostgreSQL adapter
+        ↓
+8. Run adapter tests with FakeOrderUseCases
+        ↓
+9. Return to OpenAPI: same external contract
+        ↓
+10. make generate-server-skeleton
+        ↓
+11. Inspect generated FastAPI routes, models, and BaseDefaultApi
+        ↓
+12. Open DefaultApiImpl outside generated/
+        ↓
+13. make generated-demo
+        ↓
+14. Follow the real request: generated route -> adapter -> port -> core
+```
+
+The key observation is not merely that FastAPI and Flask can expose the same endpoints. It is that **the application core has no reason to know which framework or generated transport is currently connected to its inbound port**. Code generation can automate transport scaffolding, while the application's ports, domain model, business rules, and dependency direction remain explicit handwritten architectural decisions.

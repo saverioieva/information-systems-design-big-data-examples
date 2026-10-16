@@ -1,0 +1,171 @@
+name: asynchronous-messaging-rabbitmq
+
+x-lab-service: &lab-service
+  image: async-rabbitmq-lab:local
+  build:
+    context: .
+  environment: &rabbit-env
+    RABBITMQ_HOST: rabbitmq
+    RABBITMQ_PORT: "5672"
+    RABBITMQ_USER: student
+    RABBITMQ_PASSWORD: student
+  depends_on:
+    rabbitmq:
+      condition: service_healthy
+  networks:
+    - messaging
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: student
+      RABBITMQ_DEFAULT_PASS: student
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - messaging
+
+  lab:
+    <<: *lab-service
+    profiles: ["tools"]
+    command: ["sleep", "infinity"]
+    volumes:
+      - demo-data:/data
+
+  work-worker-a:
+    <<: *lab-service
+    profiles: ["work"]
+    command: ["python", "-m", "demos.work_queue.worker"]
+    environment:
+      <<: *rabbit-env
+      WORKER_NAME: worker-a
+
+  work-worker-b:
+    <<: *lab-service
+    profiles: ["work"]
+    command: ["python", "-m", "demos.work_queue.worker"]
+    environment:
+      <<: *rabbit-env
+      WORKER_NAME: worker-b
+
+  fanout-inventory:
+    <<: *lab-service
+    profiles: ["fanout"]
+    command: ["python", "-m", "demos.fanout.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: inventory.events
+      CONSUMER_NAME: inventory-service
+
+  fanout-notification:
+    <<: *lab-service
+    profiles: ["fanout"]
+    command: ["python", "-m", "demos.fanout.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: notification.events
+      CONSUMER_NAME: notification-service
+
+  direct-all:
+    <<: *lab-service
+    profiles: ["direct"]
+    command: ["python", "-m", "demos.direct.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: orders.all.statuses
+      CONSUMER_NAME: audit-service
+      BINDING_KEYS: order.created,order.failed
+
+  direct-failures:
+    <<: *lab-service
+    profiles: ["direct"]
+    command: ["python", "-m", "demos.direct.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: orders.failures
+      CONSUMER_NAME: failure-monitor
+      BINDING_KEYS: order.failed
+
+  topic-all:
+    <<: *lab-service
+    profiles: ["topic"]
+    command: ["python", "-m", "demos.topic.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: orders.all.events
+      CONSUMER_NAME: order-history
+      BINDING_KEY: order.*
+
+  topic-created:
+    <<: *lab-service
+    profiles: ["topic"]
+    command: ["python", "-m", "demos.topic.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: orders.created.events
+      CONSUMER_NAME: onboarding-flow
+      BINDING_KEY: order.created
+
+  headers-eu-orders:
+    <<: *lab-service
+    profiles: ["headers"]
+    command: ["python", "-m", "demos.headers.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: eu.orders
+      CONSUMER_NAME: eu-order-handler
+      BINDING_HEADERS: '{"region":"eu","type":"order"}'
+
+  headers-payments:
+    <<: *lab-service
+    profiles: ["headers"]
+    command: ["python", "-m", "demos.headers.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: payment.commands
+      CONSUMER_NAME: payment-handler
+      BINDING_HEADERS: '{"type":"payment"}'
+
+  rpc-server:
+    <<: *lab-service
+    profiles: ["rpc"]
+    command: ["python", "-m", "demos.request_reply.server"]
+
+  idempotent-consumer:
+    <<: *lab-service
+    profiles: ["reliability"]
+    command: ["python", "-m", "demos.reliability.idempotent_consumer"]
+    volumes:
+      - demo-data:/data
+
+  ordering-a:
+    <<: *lab-service
+    profiles: ["ordering"]
+    command: ["python", "-m", "demos.ordering.consumer"]
+    environment:
+      <<: *rabbit-env
+      ORDER_KEY: A
+
+  ordering-b:
+    <<: *lab-service
+    profiles: ["ordering"]
+    command: ["python", "-m", "demos.ordering.consumer"]
+    environment:
+      <<: *rabbit-env
+      ORDER_KEY: B
+
+networks:
+  messaging:
+
+volumes:
+  rabbitmq-data:
+  demo-data:

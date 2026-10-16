@@ -1,0 +1,47 @@
+asyncapi: 3.0.0
+info:
+  title: FTGO Order Events
+  version: 1.0.0
+  description: >-
+    Minimal contract used by this lab to document an asynchronous OrderCreated event.
+servers:
+  rabbitmq:
+    host: rabbitmq:5672
+    protocol: amqp
+    description: RabbitMQ broker used by Docker Compose.
+channels:
+  orderEvents:
+    address: orders.topic
+    description: Logical channel used to publish order lifecycle events.
+    messages:
+      orderCreated:
+        $ref: '#/components/messages/OrderCreated'
+operations:
+  publishOrderCreated:
+    action: send
+    channel:
+      $ref: '#/channels/orderEvents'
+    messages:
+      - $ref: '#/channels/orderEvents/messages/orderCreated'
+  consumeOrderCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/orderEvents'
+    messages:
+      - $ref: '#/channels/orderEvents/messages/orderCreated'
+components:
+  messages:
+    OrderCreated:
+      name: OrderCreated
+      title: Order created event
+      payload:
+        type: object
+        required: [eventId, orderId, type]
+        properties:
+          eventId:
+            type: string
+          orderId:
+            type: string
+          type:
+            type: string
+            const: order.created
