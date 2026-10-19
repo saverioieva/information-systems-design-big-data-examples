@@ -1,0 +1,24 @@
+{
+  "containerDefinitions": [
+    {
+      "name": "server",
+      "image": "000000000000.dkr.ecr.us-east-1.localhost.localstack.cloud:4566/localstack-ecr-repository:latest",
+      "cpu": 10,
+      "memory": 10,
+      "portMappings": [
+		{ "containerPort": 80, "protocol": "tcp", "appProtocol": "http" }
+	  ],
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-create-group": "true", "awslogs-group": "myloggroup",
+          "awslogs-stream-prefix": "myprefix", "awslogs-region": "us-east-1"
+        }
+      }
+    }
+  ],
+  "family": "myfamily",
+  "requiresCompatibilities": ["FARGATE"]
+}
+
