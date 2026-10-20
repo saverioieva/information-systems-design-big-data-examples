@@ -674,28 +674,4 @@ or:
 make down
 ```
 
----
 
-## Teaching sequence
-
-A useful classroom walkthrough is:
-
-```text
-1. Call the four real REST services directly
-                ↓
-2. Call the API Gateway composition endpoint
-                ↓
-3. Inspect Hexagonal ports and adapters
-                ↓
-4. Trigger transient Kitchen failures -> Retry
-                ↓
-5. Keep Kitchen failing -> Circuit Breaker -> fail fast
-                ↓
-6. Slow Kitchen + concurrent load -> Bulkhead isolation
-                ↓
-7. Fail Payment -> cached fallback / graceful degradation
-```
-
-The central architectural message is:
-
-> **Resilience mechanisms protect an outbound adapter; business degradation policy remains in the application core.**

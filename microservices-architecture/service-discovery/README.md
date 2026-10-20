@@ -189,6 +189,8 @@ Run the Dockerized client:
 make application-demo
 ```
 
+`application-demo` is intentionally **observational**: it starts only the temporary client container and does **not** start, restart, or reconcile any Order Service instance. This is important for the membership-change experiment below.
+
 Typical output:
 
 ```text
@@ -218,13 +220,13 @@ Stop one instance:
 make application-stop-instance
 ```
 
-Wait a few seconds for the health check, then run:
+Wait a few seconds for Consul to observe the health change, then run:
 
 ```bash
 make application-demo
 ```
 
-The client should now discover only the healthy instances.
+The client should now discover only the two healthy instances. The demo command uses Docker Compose with `--no-deps`, so the stopped instance remains stopped.
 
 Restart the instance:
 
@@ -364,6 +366,8 @@ Run the Dockerized client:
 make platform-demo
 ```
 
+As in the application-level scenario, `platform-demo` is observational: it does not start or restart the router, registrar, or Order Service instances.
+
 Typical output:
 
 ```text
@@ -424,7 +428,7 @@ Run:
 make platform-demo
 ```
 
-The client still calls the same endpoint, while requests are routed only to the remaining instances.
+The client still calls the same endpoint, while requests are routed only to the remaining instances. The stopped instance is not recreated by the demo command.
 
 Restart the instance:
 

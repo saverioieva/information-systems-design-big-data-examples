@@ -47,8 +47,3 @@ services:
       SERVICE_NAME: order-service
       ORDER_ID: "1001"
       REQUEST_COUNT: "9"
-    depends_on:
-      - consul
-      - order-1
-      - order-2
-      - order-3

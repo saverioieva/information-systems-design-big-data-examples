@@ -81,8 +81,3 @@ services:
       ROUTER_URL: http://nginx-router
       ORDER_ID: "1001"
       REQUEST_COUNT: "9"
-    depends_on:
-      - nginx-router
-      - order-1
-      - order-2
-      - order-3

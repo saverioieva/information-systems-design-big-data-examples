@@ -27,13 +27,13 @@ management:
 	@echo "password: student"
 
 queues:
-	$(COMPOSE) exec rabbitmq rabbitmqctl list_queues name messages messages_ready messages_unacknowledged consumers durable
+	$(COMPOSE) exec rabbitmq rabbitmqctl -q --formatter=pretty_table list_queues name messages messages_ready messages_unacknowledged consumers durable
 
 exchanges:
-	$(COMPOSE) exec rabbitmq rabbitmqctl list_exchanges name type durable
+	$(COMPOSE) exec rabbitmq rabbitmqctl -q --formatter=pretty_table list_exchanges name type durable
 
 bindings:
-	$(COMPOSE) exec rabbitmq rabbitmqctl list_bindings source_name destination_name destination_kind routing_key
+	$(COMPOSE) exec rabbitmq rabbitmqctl -q --formatter=pretty_table list_bindings source_name destination_name destination_kind routing_key
 
 work-up:
 	$(COMPOSE) --profile work up -d --build rabbitmq work-worker-a work-worker-b

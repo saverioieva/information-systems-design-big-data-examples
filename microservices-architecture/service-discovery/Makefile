@@ -8,7 +8,7 @@ application-up:
 	$(APP) up --build -d consul order-1 order-2 order-3
 
 application-demo:
-	$(APP) --profile tools run --rm client
+	$(APP) --profile tools run --rm --no-deps client
 
 application-stop-instance:
 	$(APP) stop order-2
@@ -23,7 +23,7 @@ platform-up:
 	$(PLATFORM) up --build -d consul registrar nginx-router order-1 order-2 order-3
 
 platform-demo:
-	$(PLATFORM) --profile tools run --rm demo-client
+	$(PLATFORM) --profile tools run --rm --no-deps demo-client
 
 platform-stop-instance:
 	$(PLATFORM) stop order-2
