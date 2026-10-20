@@ -1,0 +1,197 @@
+COMPOSE=docker compose
+PROFILES=--profile work --profile fanout --profile direct --profile topic --profile headers --profile rpc --profile reliability --profile ordering --profile redelivery-crash --profile redelivery-recovery
+
+.PHONY: help build broker all status management queues exchanges bindings \
+        work work-logs work-stop \
+        fanout fanout-logs fanout-stop \
+        direct direct-logs direct-stop \
+        topic topic-logs topic-stop \
+        headers headers-logs headers-stop \
+        rpc rpc-logs rpc-stop \
+        duplicate duplicate-logs duplicate-stop \
+        ordering ordering-logs ordering-stop \
+        redelivery-crash redelivery-crash-logs redelivery-recover redelivery-recover-logs redelivery-stop \
+        test down reset
+
+help:
+	@echo "Consumer/service lifecycle"
+	@echo ""
+	@echo "  make -f Makefile.services broker        Start RabbitMQ only"
+	@echo "  make -f Makefile.services work          Start work-queue workers"
+	@echo "  make -f Makefile.services fanout        Start fanout subscribers"
+	@echo "  make -f Makefile.services direct        Start direct-exchange consumers"
+	@echo "  make -f Makefile.services topic         Start topic-exchange consumers"
+	@echo "  make -f Makefile.services headers       Start headers-exchange consumers"
+	@echo "  make -f Makefile.services rpc           Start request/reply server"
+	@echo "  make -f Makefile.services duplicate     Start idempotent consumer"
+	@echo "  make -f Makefile.services ordering      Start ordering consumers"
+	@echo "  make -f Makefile.services all           Start all long-running consumers"
+	@echo ""
+	@echo "Redelivery is a two-stage consumer demo:"
+	@echo "  make -f Makefile.services redelivery-crash"
+	@echo "  make -f Makefile.services redelivery-recover"
+	@echo ""
+	@echo "Use Makefile.publishers in another terminal to send messages."
+
+build:
+	$(COMPOSE) --profile tools build lab
+
+broker:
+	$(COMPOSE) up -d rabbitmq
+
+status:
+	$(COMPOSE) $(PROFILES) ps
+
+management:
+	@echo "RabbitMQ Management UI: http://localhost:15672"
+	@echo "username: student"
+	@echo "password: student"
+
+queues:
+	$(COMPOSE) exec rabbitmq rabbitmqctl list_queues name messages messages_ready messages_unacknowledged consumers durable
+
+exchanges:
+	$(COMPOSE) exec rabbitmq rabbitmqctl list_exchanges name type durable
+
+bindings:
+	$(COMPOSE) exec rabbitmq rabbitmqctl list_bindings source_name destination_name destination_kind routing_key
+
+# Wait until a consumer has declared its queue before returning control to the lecturer.
+define wait_for_queue
+	@echo "Waiting for queue $(1) ..."
+	@i=0; until $(COMPOSE) exec -T rabbitmq rabbitmqctl list_queues name 2>/dev/null | grep -Fxq "$(1)"; do \
+		i=$$((i+1)); \
+		if [ $$i -ge 30 ]; then echo "Timed out waiting for queue $(1)"; exit 1; fi; \
+		sleep 1; \
+	done
+endef
+
+work:
+	$(COMPOSE) --profile work up -d --build rabbitmq work-worker-a work-worker-b
+	$(call wait_for_queue,orders.work)
+
+work-logs:
+	$(COMPOSE) logs -f work-worker-a work-worker-b
+
+work-stop:
+	$(COMPOSE) stop work-worker-a work-worker-b
+
+fanout:
+	$(COMPOSE) --profile fanout up -d --build rabbitmq fanout-inventory fanout-notification
+	$(call wait_for_queue,inventory.events)
+	$(call wait_for_queue,notification.events)
+
+fanout-logs:
+	$(COMPOSE) logs -f fanout-inventory fanout-notification
+
+fanout-stop:
+	$(COMPOSE) stop fanout-inventory fanout-notification
+
+direct:
+	$(COMPOSE) --profile direct up -d --build rabbitmq direct-all direct-failures
+	$(call wait_for_queue,orders.all.statuses)
+	$(call wait_for_queue,orders.failures)
+
+direct-logs:
+	$(COMPOSE) logs -f direct-all direct-failures
+
+direct-stop:
+	$(COMPOSE) stop direct-all direct-failures
+
+topic:
+	$(COMPOSE) --profile topic up -d --build rabbitmq topic-all topic-created
+	$(call wait_for_queue,orders.all.events)
+	$(call wait_for_queue,orders.created.events)
+
+topic-logs:
+	$(COMPOSE) logs -f topic-all topic-created
+
+topic-stop:
+	$(COMPOSE) stop topic-all topic-created
+
+headers:
+	$(COMPOSE) --profile headers up -d --build rabbitmq headers-eu-orders headers-payments
+	$(call wait_for_queue,eu.orders)
+	$(call wait_for_queue,payment.commands)
+
+headers-logs:
+	$(COMPOSE) logs -f headers-eu-orders headers-payments
+
+headers-stop:
+	$(COMPOSE) stop headers-eu-orders headers-payments
+
+rpc:
+	$(COMPOSE) --profile rpc up -d --build rabbitmq rpc-server
+	$(call wait_for_queue,pricing.rpc)
+
+rpc-logs:
+	$(COMPOSE) logs -f rpc-server
+
+rpc-stop:
+	$(COMPOSE) stop rpc-server
+
+duplicate:
+	$(COMPOSE) --profile reliability up -d --build rabbitmq idempotent-consumer
+	$(call wait_for_queue,payment.authorize)
+
+duplicate-logs:
+	$(COMPOSE) logs -f idempotent-consumer
+
+duplicate-stop:
+	$(COMPOSE) stop idempotent-consumer
+
+ordering:
+	$(COMPOSE) --profile ordering up -d --build rabbitmq ordering-a ordering-b
+	$(call wait_for_queue,orders.partition.a)
+	$(call wait_for_queue,orders.partition.b)
+
+ordering-logs:
+	$(COMPOSE) logs -f ordering-a ordering-b
+
+ordering-stop:
+	$(COMPOSE) stop ordering-a ordering-b
+
+# Redelivery is intentionally split into two different consumer lifecycles.
+# 1) Start the crashing consumer, then publish with Makefile.publishers.
+# 2) Start the recovery consumer and observe redelivered=True.
+redelivery-crash:
+	$(COMPOSE) --profile redelivery-crash up -d --build rabbitmq redelivery-crash-consumer
+	$(call wait_for_queue,reliability.redelivery)
+
+redelivery-crash-logs:
+	$(COMPOSE) logs -f redelivery-crash-consumer
+
+redelivery-recover:
+	$(COMPOSE) --profile redelivery-recovery up -d --build rabbitmq redelivery-recovery-consumer
+
+redelivery-recover-logs:
+	$(COMPOSE) logs -f redelivery-recovery-consumer
+
+redelivery-stop:
+	$(COMPOSE) stop redelivery-crash-consumer redelivery-recovery-consumer
+
+all:
+	$(COMPOSE) --profile work --profile fanout --profile direct --profile topic --profile headers --profile rpc --profile reliability --profile ordering up -d --build
+	$(call wait_for_queue,orders.work)
+	$(call wait_for_queue,inventory.events)
+	$(call wait_for_queue,notification.events)
+	$(call wait_for_queue,orders.all.statuses)
+	$(call wait_for_queue,orders.failures)
+	$(call wait_for_queue,orders.all.events)
+	$(call wait_for_queue,orders.created.events)
+	$(call wait_for_queue,eu.orders)
+	$(call wait_for_queue,payment.commands)
+	$(call wait_for_queue,pricing.rpc)
+	$(call wait_for_queue,payment.authorize)
+	$(call wait_for_queue,orders.partition.a)
+	$(call wait_for_queue,orders.partition.b)
+
+test:
+	$(COMPOSE) --profile tools build lab
+	$(COMPOSE) --profile tools run --rm --no-deps lab python -m compileall -q demos
+
+down:
+	$(COMPOSE) $(PROFILES) down --remove-orphans
+
+reset:
+	$(COMPOSE) $(PROFILES) down -v --remove-orphans

@@ -147,6 +147,16 @@ services:
     volumes:
       - demo-data:/data
 
+  redelivery-crash-consumer:
+    <<: *lab-service
+    profiles: ["redelivery-crash"]
+    command: ["python", "-m", "demos.reliability.redelivery_consumer", "--crash-before-ack"]
+
+  redelivery-recovery-consumer:
+    <<: *lab-service
+    profiles: ["redelivery-recovery"]
+    command: ["python", "-m", "demos.reliability.redelivery_consumer"]
+
   ordering-a:
     <<: *lab-service
     profiles: ["ordering"]

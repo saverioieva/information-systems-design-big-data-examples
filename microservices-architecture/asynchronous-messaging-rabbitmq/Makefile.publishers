@@ -1,0 +1,56 @@
+COMPOSE=docker compose
+LAB=$(COMPOSE) --profile tools run --rm --no-deps lab
+
+.PHONY: help check-broker work fanout direct topic headers rpc duplicate redelivery ordering
+
+help:
+	@echo "One-shot publishers/clients"
+	@echo ""
+	@echo "Start the corresponding consumers first with Makefile.services, then run:"
+	@echo "  make -f Makefile.publishers work"
+	@echo "  make -f Makefile.publishers fanout"
+	@echo "  make -f Makefile.publishers direct"
+	@echo "  make -f Makefile.publishers topic"
+	@echo "  make -f Makefile.publishers headers"
+	@echo "  make -f Makefile.publishers rpc"
+	@echo "  make -f Makefile.publishers duplicate"
+	@echo "  make -f Makefile.publishers redelivery"
+	@echo "  make -f Makefile.publishers ordering"
+
+check-broker:
+	@$(COMPOSE) ps --status running -q rabbitmq | grep -q . || \
+		(echo "RabbitMQ is not running. Start services first, for example:"; \
+		 echo "  make -f Makefile.services work"; exit 1)
+
+work: check-broker
+	$(LAB) python -m demos.work_queue.publisher --count 8
+
+fanout: check-broker
+	$(LAB) python -m demos.fanout.publisher --order-id order-123
+
+direct: check-broker
+	$(LAB) python -m demos.direct.publisher order.created --order-id order-201
+	$(LAB) python -m demos.direct.publisher order.failed --order-id order-202
+
+topic: check-broker
+	$(LAB) python -m demos.topic.publisher order.created --order-id order-301
+	$(LAB) python -m demos.topic.publisher order.updated --order-id order-301
+	$(LAB) python -m demos.topic.publisher order.failed --order-id order-302
+
+headers: check-broker
+	$(LAB) python -m demos.headers.publisher --type order --region eu
+	$(LAB) python -m demos.headers.publisher --type order --region us
+	$(LAB) python -m demos.headers.publisher --type payment --region eu
+
+rpc: check-broker
+	$(LAB) python -m demos.request_reply.client --order-id order-401 --subtotal 25.50
+	$(LAB) python -m demos.request_reply.client --order-id order-402 --subtotal 42.00
+
+duplicate: check-broker
+	$(LAB) python -m demos.reliability.duplicate_publisher
+
+redelivery: check-broker
+	$(LAB) python -m demos.reliability.redelivery_publisher
+
+ordering: check-broker
+	$(LAB) python -m demos.ordering.publisher

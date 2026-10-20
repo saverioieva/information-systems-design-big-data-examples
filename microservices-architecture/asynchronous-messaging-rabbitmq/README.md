@@ -2,48 +2,94 @@
 
 This lab introduces **asynchronous communication between microservices** using RabbitMQ and the AMQP 0-9-1 messaging model.
 
-The examples are intentionally small and deterministic. Their purpose is to make messaging topology and delivery semantics visible before introducing larger event-driven workflows.
+The examples are Docker-first: the host only needs Docker, Docker Compose, and `make`. No local Python, Pika, RabbitMQ CLI, or AMQP tooling is required.
 
-All Python code runs in Docker containers. The host only needs Docker, Docker Compose, and `make` as a convenience wrapper.
-
----
+The lab deliberately separates **long-running services/consumers** from **one-shot publishers/clients**. This makes the message flow visible in class: first start the services, keep their logs open, then publish messages from a second terminal.
 
 ## Learning goals
 
 By the end of the lab you should be able to explain and observe:
 
-- temporal decoupling between producers and consumers;
-- message headers, payloads, channels, queues, and exchanges;
-- point-to-point, publish/subscribe, and asynchronous request/reply interactions;
-- why a message broker provides routing, buffering, and delivery;
-- RabbitMQ direct, fanout, topic, and headers exchanges;
-- competing consumers, prefetch, and manual acknowledgements;
-- one queue per independent publish/subscribe subscriber;
-- `reply_to` and `correlation_id` in request/reply messaging;
-- redelivery, duplicate processing, and idempotent consumers;
-- the relationship between concurrency and ordering;
-- how AsyncAPI describes an event-driven contract.
+- asynchronous communication through a **message broker**;
+- the difference between a **queue** and an **exchange**;
+- **point-to-point / competing-consumer** processing;
+- **publish/subscribe** with a queue per subscriber;
+- RabbitMQ **direct, fanout, topic, and headers exchanges**;
+- asynchronous **request/reply** with `reply_to` and `correlation_id`;
+- **manual acknowledgements**, redelivery, and at-least-once processing;
+- why consumers should often be **idempotent**;
+- the relationship between **concurrency and ordering**;
+- how an **AsyncAPI** document can describe a message-based contract.
 
 ---
 
-## Lab roadmap - same order as the slides
+## Architecture
 
-The README deliberately follows the same progression used in the lecture slides.
+```text
+                       RabbitMQ
 
-| Step | Slide topic | Executable example |
-|---|---|---|
-| 1 | Asynchronous Messaging: Messages and Channels | concepts used by all demos |
-| 2 | Asynchronous Interaction Styles | work queue, fanout, request/reply |
-| 3 | Why Use a Message Broker? | RabbitMQ + Management UI |
-| 4 | AMQP and RabbitMQ: Message Flow | broker inspection with queues/exchanges/bindings |
-| 5 | AMQP Exchange Types | direct, fanout, topic, headers |
-| 6 | Point-to-Point and Work Queues | competing workers, prefetch, ACK |
-| 7 | Publish/Subscribe and Event Routing | one queue per subscriber + buffering demo |
-| 8 | Request/Reply over RabbitMQ | `reply_to` + `correlation_id` |
-| 9 | Reliability, Duplicates, and Ordering | redelivery, idempotency, ordering by key |
-| 10 | AsyncAPI and Architectural Trade-offs | `asyncapi/order-events.yaml` |
+ Publisher       +---------------------------+        Consumer
+    |            |                           |            ^
+    | publish    |   Exchange --> Queue      |  deliver   |
+    +----------->|      |          |         |----------->+
+                 |      +--binding-+         |
+                 |                           |
+                 +---------------------------+
+                              ^
+                              |
+                              +----- ACK -----+
+```
 
-This order is intentional: first understand the communication model, then RabbitMQ routing, then the higher-level interaction patterns and reliability concerns.
+A producer normally publishes to an **exchange**. The exchange does not store messages: it uses bindings and routing rules to decide which queue or queues receive a copy. Queues buffer messages until a consumer can process them.
+
+The work-queue and request/reply examples also use RabbitMQ's **default exchange**, where a queue name is used as the routing key.
+
+---
+
+## Two Makefiles, two roles
+
+The project has intentionally been split into two Makefiles.
+
+```text
+Makefile.services
+    |
+    +-- RabbitMQ
+    +-- long-running consumers/workers
+    +-- service logs and broker inspection
+
+Makefile.publishers
+    |
+    +-- one-shot publishers
+    +-- request/reply clients
+    +-- deterministic message generation
+```
+
+The normal classroom workflow uses **two terminals**.
+
+### Terminal 1 — start the service side
+
+For example:
+
+```bash
+make -f Makefile.services fanout
+make -f Makefile.services fanout-logs
+```
+
+The first command starts RabbitMQ and the fanout consumers. It waits until the consumers have declared their queues before returning.
+
+The second command follows the consumer logs.
+
+### Terminal 2 — send messages
+
+```bash
+make -f Makefile.publishers fanout
+```
+
+Run the publisher target again whenever you want to send another deterministic batch of messages.
+
+> The publisher Makefile does **not** start RabbitMQ or consumers implicitly. Services must be running first.
+
+This separation is intentional: it makes the asynchronous nature of the examples easier to observe than a single target that starts services, publishes messages, waits, and prints logs in sequence.
 
 ---
 
@@ -65,411 +111,143 @@ asynchronous-messaging-rabbitmq/
 │   └── ordering/
 ├── Dockerfile
 ├── docker-compose.yml
-├── Makefile
+├── Makefile.services
+├── Makefile.publishers
 ├── requirements.txt
 └── README.md
 ```
 
-`demos/common.py` contains the RabbitMQ connection and JSON serialization helpers shared by the examples.
+`docker-compose.yml` is the composition root for the lab. All scenario-specific consumers use the same Dockerized Python image and the same RabbitMQ broker.
 
-`docker-compose.yml` is the composition root for the lab: RabbitMQ and all scenario-specific consumers use the same Dockerized Python application image.
+## How to read the source code
+
+The examples intentionally keep the Python small so that each messaging concept is visible in one publisher and one consumer. A useful reading order is:
+
+```text
+docker-compose.yml
+      |
+      | selects a scenario through Compose profiles
+      | and injects queue names / binding keys / consumer names
+      v
+demos/<scenario>/consumer.py      long-running service side
+      ^
+      | RabbitMQ exchange / queue / binding
+      v
+demos/<scenario>/publisher.py     one-shot producer side
+```
+
+Start with these shared files:
+
+| File | What to notice |
+|---|---|
+| `demos/common.py` | Creates the Pika connection, retries while RabbitMQ starts, encodes/decodes JSON, and creates persistent AMQP properties. |
+| `docker-compose.yml` | Runs one RabbitMQ broker and parameterizes reusable consumer modules with environment variables. Compose profiles keep scenarios independent. |
+| `Makefile.services` | Owns the lifecycle of RabbitMQ and long-running consumers. It waits for expected queues so a publisher is not started before the topology exists. |
+| `Makefile.publishers` | Runs one-shot publishers/clients in disposable containers. It deliberately does not start consumers. |
+| `asyncapi/order-events.yaml` | Documents one asynchronous contract independently from the Python implementation. |
+
+### Shared helper: `demos/common.py`
+
+All examples use the same helper instead of repeating connection boilerplate. In particular:
+
+- `connection()` reads RabbitMQ coordinates from environment variables and retries the initial connection;
+- `encode()` / `decode()` keep the payload examples as JSON bytes;
+- `persistent_json_properties()` sets `content_type=application/json` and `delivery_mode=2`, and can add AMQP properties such as `message_id`, `correlation_id`, `reply_to`, or custom headers.
+
+This helper is infrastructure code for the lab; it is not a domain abstraction. The goal is simply to keep each scenario focused on the AMQP concept being demonstrated.
+
+### Where the messaging topology is declared
+
+RabbitMQ topology is created with idempotent declarations such as `exchange_declare()`, `queue_declare()`, and `queue_bind()`. Most consumers declare the topology they need when they start. Publishers also declare the exchange or queue they publish to so that a standalone publisher fails less mysteriously if the broker was reset.
+
+The important distinction is:
+
+```text
+exchange_declare()  -> creates/configures the routing entity
+queue_declare()     -> creates/configures the buffer
+queue_bind()        -> connects a queue to an exchange using a rule
+basic_publish()     -> sends a message
+basic_consume()     -> registers a consumer callback
+basic_ack()         -> confirms successful processing of one delivery
+```
 
 ---
 
-## Prerequisites and initial setup
+## Prerequisites
 
-Required on the host:
+Required:
 
 ```text
 Docker
 Docker Compose
-make
+GNU Make
 ```
 
-No local Python, Pika, RabbitMQ CLI, or AMQP tooling is required.
-
-Build the shared image if you want to warm the Docker cache:
+Optional warm-up build:
 
 ```bash
-make build
+make -f Makefile.services build
 ```
 
-The scenario targets also build the image when required, so the explicit build step is optional.
+Each service target also uses `--build`, so this explicit build step is not required.
 
-To completely remove containers, broker state, and the SQLite idempotency volume:
+Useful help:
 
 ```bash
-make reset
+make -f Makefile.services help
+make -f Makefile.publishers help
 ```
 
 ---
 
-# 1. Asynchronous Messaging: Messages and Channels
+# 1. Start RabbitMQ and inspect the broker
 
-In asynchronous messaging, a producer sends a message without requiring the consumer to process it immediately.
-
-```text
-Producer ---> Message Channel ---> Consumer
-                |
-                +-- message can wait here
-```
-
-This provides **temporal decoupling**: producer and consumer can progress at different speeds and do not necessarily need to be executing at the same instant.
-
-A message has two conceptually different parts:
-
-```text
-Message
-├── metadata / headers
-│   ├── message_id
-│   ├── correlation_id
-│   ├── reply_to
-│   ├── routing properties
-│   └── custom headers
-└── payload
-    └── application data
-```
-
-In this lab the payload is JSON because the focus is messaging topology and delivery semantics. AMQP transports bytes, so other encodings such as Protobuf or Avro could also be used.
-
-Two channel styles will appear repeatedly:
-
-- **Point-to-point**: each message is processed by one consumer.
-- **Publish/subscribe**: an event can be delivered to multiple interested subscribers.
-
-The later examples make both styles concrete.
-
----
-
-# 2. Asynchronous Interaction Styles
-
-The slides introduce three interaction styles. The lab implements all three.
-
-## Point-to-point
-
-A producer sends a command or task to a queue. If several consumers compete on that queue, one consumer processes each message.
-
-```text
-Producer ---> Queue ---> Worker A
-                  \\---> Worker B
-
-one message -> one worker
-```
-
-Executable example:
+Start only RabbitMQ:
 
 ```bash
-make work-demo
+make -f Makefile.services broker
 ```
 
-## Publish/subscribe
-
-A producer publishes an event to an exchange. RabbitMQ can route a copy to multiple queues, allowing each independent subscriber to process its own copy.
-
-```text
-Producer ---> Exchange ---> Queue A ---> Subscriber A
-                     \\----> Queue B ---> Subscriber B
-```
-
-Executable example:
-
-```bash
-make fanout-demo
-```
-
-## Asynchronous request/reply
-
-A request and a reply travel through different messaging paths. A correlation ID associates the reply with the original request.
-
-```text
-Client ---> Request Queue ---> Service
-  ^                              |
-  |                              v
-  +--------- Reply Queue <-------+
-           correlation_id
-```
-
-Executable example:
-
-```bash
-make rpc-demo
-```
-
-The transport remains asynchronous even if the client deliberately waits for the reply.
-
----
-
-# 3. Why Use a Message Broker?
-
-With direct communication, the sender must know how to reach the receiver and must directly handle receiver unavailability.
-
-```text
-Direct communication
-
-Service A --------------------> Service B
-                                must be reachable now
-```
-
-With broker-based messaging, RabbitMQ provides a stable intermediary for **routing, buffering, and delivery**.
-
-```text
-Broker-based communication
-
-Service A ---> RabbitMQ ---> Service B
-                 |
-                 +-- can buffer messages
-```
-
-The producer does not need to know the network location of the consumer. If a queue remains available, messages can wait while a consumer is temporarily offline.
-
-The trade-off is that the broker becomes shared infrastructure that must itself be monitored, scaled, and operated for high availability.
-
-Start RabbitMQ:
-
-```bash
-make up
-```
-
-Show the Management UI URL and credentials:
-
-```bash
-make management
-```
-
-Management UI:
+RabbitMQ Management UI:
 
 ```text
 http://localhost:15672
+```
+
+Credentials:
+
+```text
 username: student
 password: student
 ```
 
-AMQP is exposed on port `5672`; the Management UI uses port `15672`.
+Useful inspection commands:
+
+```bash
+make -f Makefile.services status
+make -f Makefile.services queues
+make -f Makefile.services exchanges
+make -f Makefile.services bindings
+```
+
+At this point RabbitMQ is running, but most application queues and exchanges do not exist yet. In the following steps the consumers declare the topology when they start.
 
 ---
 
-# 4. AMQP and RabbitMQ: Message Flow
+# 2. Point-to-point processing with a Work Queue
 
-The central RabbitMQ flow is:
-
-```text
-Producer
-   |
-   | publish
-   v
-Exchange
-   |
-   | binding / routing rule
-   v
-Queue
-   |
-   | delivery
-   v
-Consumer
-   |
-   +---- ACK ----> RabbitMQ
-```
-
-The roles are different:
-
-- **Producer** publishes a message.
-- **Exchange** routes the message; it is not the application buffer.
-- **Binding** connects an exchange to a queue and defines a routing rule.
-- **Queue** buffers messages until they can be consumed.
-- **Consumer** processes a delivery and can acknowledge it after successful processing.
-
-If a consumer fails before acknowledging a message, RabbitMQ can make that message available for delivery again.
-
-Queue durability, message persistence, and consumer acknowledgements solve different problems and should not be treated as synonyms.
-
-Inspect the broker from the command line:
+## Terminal 1 — start two workers
 
 ```bash
-make queues
-make exchanges
-make bindings
+make -f Makefile.services work
+make -f Makefile.services work-logs
 ```
 
-The commands run `rabbitmqctl` inside the RabbitMQ container and use RabbitMQ's `pretty_table` formatter.
-
-A blank `source_name` in `make bindings` is intentional. It represents RabbitMQ's **default exchange** (`""`). Every declared queue is automatically bound to the default exchange using the queue name as its routing key.
-
-For example:
-
-```text
-source_name      destination_name       destination_kind   routing_key
-                 orders.work           queue              orders.work
-orders.direct    orders.failures       queue              order.failed
-orders.fanout    inventory.events      queue              inventory.events
-```
-
-The first row means:
-
-```text
-source exchange = ""     (default exchange)
-routing key     = orders.work
-destination     = orders.work queue
-```
-
----
-
-# 5. AMQP Exchange Types
-
-RabbitMQ exchanges define how published messages are routed to queues.
-
-This lab demonstrates the four exchange types introduced in the slides.
-
-## 5.1 Direct Exchange - exact routing keys
-
-Run:
-
-```bash
-make direct-demo
-```
-
-The publisher sends:
-
-```text
-order.created
-order.failed
-```
-
-Bindings:
-
-```text
-                         orders.direct
-                              |
-              +---------------+----------------+
-              |                                |
-       order.created                     order.failed
-              |                                |
-              +----------> all-statuses <------+
-                                               |
-                                               +--> failures
-```
-
-A **direct exchange** routes a message to queues whose binding key exactly matches the message routing key.
-
-Inspect the actual bindings:
-
-```bash
-make bindings
-```
-
-## 5.2 Fanout Exchange - broadcast to every bound queue
-
-Run:
-
-```bash
-make fanout-demo
-```
-
-```text
-                       orders.fanout
-Order Service  ------> [ fanout exchange ]
-                              |
-                    +---------+---------+
-                    |                   |
-                    v                   v
-            inventory.events   notification.events
-```
-
-A **fanout exchange** ignores the routing key and sends a copy of each message to every bound queue.
-
-The important point is that the exchange creates the routing decision; the queues provide the independent buffers.
-
-## 5.3 Topic Exchange - wildcard routing
-
-Run:
-
-```bash
-make topic-demo
-```
-
-The demo publishes:
-
-```text
-order.created
-order.updated
-order.failed
-```
-
-Consumers bind using:
-
-```text
-order-history     -> order.*
-onboarding-flow   -> order.created
-```
-
-Therefore:
-
-```text
-order.created  -> both consumers
-order.updated  -> order-history only
-order.failed   -> order-history only
-```
-
-For a topic exchange:
-
-- `*` matches exactly one routing-key word;
-- `#` matches zero or more routing-key words.
-
-For example:
-
-```text
-order.eu.created
-order.us.cancelled
-```
-
-could be matched with patterns such as:
-
-```text
-order.*.created
-order.#
-```
-
-## 5.4 Headers Exchange - route using metadata
-
-Run:
-
-```bash
-make headers-demo
-```
-
-Three messages are published with these headers:
-
-```text
-{type=order,   region=eu}
-{type=order,   region=us}
-{type=payment, region=eu}
-```
-
-Consumers are configured as:
-
-```text
-eu-order-handler  -> type=order AND region=eu
-payment-handler   -> type=payment
-```
-
-A **headers exchange** routes according to message header values instead of the routing key.
-
-This is useful when routing depends on several metadata attributes rather than on one hierarchical routing-key string.
-
----
-
-# 6. Point-to-Point and Work Queues
-
-Run:
-
-```bash
-make work-demo
-```
-
-The demo starts two workers and publishes eight order-processing tasks.
+Topology:
 
 ```text
                            orders.work
-Producer  -------------------------------------------->
+Publisher  -------------------------------------------->
                          durable queue
                               |
                     +---------+---------+
@@ -481,243 +259,374 @@ Producer  -------------------------------------------->
                     +------ ACK --------+
 ```
 
-This is the **competing consumers** pattern:
-
-- multiple workers consume from the same queue;
-- each message is processed by one worker, not by every worker;
-- adding workers can increase throughput.
-
-The example also demonstrates flow control and reliable work processing:
-
-- the queue is durable;
-- messages are persistent;
-- `prefetch_count=1` limits outstanding unacknowledged work assigned to each worker;
-- a manual ACK is sent after processing.
-
-Inspect the queue while workers are active:
+## Terminal 2 — publish work
 
 ```bash
-make queues
+make -f Makefile.publishers work
 ```
 
-Stop the workers:
+Eight order-processing tasks are published. Each message is delivered to **one** worker, not to both. The workers compete for messages from the same queue.
+
+The consumers use:
+
+- a **durable queue**;
+- **persistent messages**;
+- `prefetch_count=1`;
+- a **manual acknowledgement** after processing.
+
+Inspect the queue while workers are processing:
 
 ```bash
-make work-stop
+make -f Makefile.services queues
 ```
 
-## Ordering consequence
+Stop only the workers:
 
-The queue has an ordered sequence of deliveries, but with several consumers the **completion order of the business work is not guaranteed**. Different workers may finish at different times.
+```bash
+make -f Makefile.services work-stop
+```
 
-This point is revisited in Step 9.
+### Source code to inspect
+
+- `demos/work_queue/publisher.py` publishes to the **default exchange** (`exchange=""`) using `orders.work` as the routing key; with the default exchange, that routing key is the queue name.
+- `demos/work_queue/worker.py` declares the same durable queue, uses `basic_qos(prefetch_count=1)`, processes one delivery, then calls `basic_ack()`.
+- `WORKER_NAME` comes from `docker-compose.yml`, allowing the same worker code to run as `worker-a` and `worker-b`.
+
+`prefetch_count=1` is important for the demo: RabbitMQ does not give a worker a second unacknowledged task while it is still processing the first one. This makes the competing-consumer behavior easy to observe.
+
+### Ordering consequence
+
+A queue has an ordered sequence of messages, but with multiple workers the **completion order** of business processing is not guaranteed.
 
 ---
 
-# 7. Publish/Subscribe and Event Routing
+# 3. Publish/Subscribe with a Fanout Exchange
 
-Publish/subscribe is not just "multiple consumers". Independent subscribers need **independent queues**.
+## Terminal 1 — start subscribers
+
+```bash
+make -f Makefile.services fanout
+make -f Makefile.services fanout-logs
+```
 
 ```text
-Order Service
-     |
-     v
-orders.fanout
-   /       \
-  v         v
-inventory  notification
-.events     .events
-   |           |
-   v           v
-Inventory   Notification
-Service      Service
+                       orders.fanout
+Order Service  ------> [ fanout exchange ]
+                              |
+                    +---------+---------+
+                    |                   |
+                    v                   v
+            inventory.events   notification.events
+                    |                   |
+                    v                   v
+             Inventory Service   Notification Service
 ```
 
-If Inventory Service and Notification Service shared the same queue, they would become competing consumers and each message would be processed by only one of them.
-
-With one queue per subscriber, each service receives its own copy and can scale, fail, or evolve independently.
-
-Start the two fanout subscribers:
+## Terminal 2 — publish an event
 
 ```bash
-make fanout-up
+make -f Makefile.publishers fanout
 ```
 
-Publish an event with the regular demo if both subscribers are online:
+A **fanout exchange** ignores the routing key and sends a copy of the message to every bound queue.
 
-```bash
-make fanout-demo
-```
+The important detail is that publish/subscribe requires **one queue per independent subscriber**. If both services consumed the same queue, they would compete for messages instead of each receiving a copy.
 
-## Observe broker buffering while one subscriber is offline
+Because the queues are durable, you can stop consumers, publish again, inspect the buffered message, and restart the consumers.
 
-This experiment makes temporal decoupling visible.
+### Source code to inspect
 
-Start the subscribers:
+- `demos/fanout/publisher.py` publishes one `OrderCreated` event to `orders.fanout` with an empty routing key because a fanout exchange ignores it.
+- `demos/fanout/consumer.py` is reused by both subscribers. `QUEUE_NAME` and `CONSUMER_NAME` are injected by Compose.
+- Each consumer declares **its own queue** and binds it to the same exchange. That queue-per-subscriber detail is what turns the topology into publish/subscribe.
 
-```bash
-make fanout-up
-```
-
-Stop only the Notification subscriber:
-
-```bash
-docker compose stop fanout-notification
-```
-
-At this point:
-
-```text
-Inventory subscriber       RUNNING
-Notification subscriber    STOPPED
-```
-
-Publish another event **without** invoking `make fanout-demo`, because that target also runs `fanout-up` and would start the stopped subscriber again:
-
-```bash
-docker compose --profile tools run --rm lab \
-  python -m demos.fanout.publisher --order-id order-456
-```
-
-Inspect the queues:
-
-```bash
-make queues
-```
-
-Expected behavior:
-
-```text
-orders.fanout
-   |
-   +--> inventory.events
-   |       |
-   |       +--> active consumer -> process -> ACK
-   |
-   +--> notification.events
-           |
-           +--> consumer offline -> message remains queued
-```
-
-Restart only the Notification subscriber:
-
-```bash
-docker compose start fanout-notification
-```
-
-Inspect its logs:
-
-```bash
-docker compose logs --tail=30 fanout-notification
-```
-
-The subscriber should receive the message that RabbitMQ buffered while it was offline.
-
-Inspect the queues again:
-
-```bash
-make queues
-```
-
-After processing and acknowledgement, the Notification queue should become empty again.
-
-The key distinction is:
-
-> **The exchange performs routing; the queue performs buffering.**
-
-The demo uses named durable queues specifically so the queue remains present when its consumer is stopped.
-
-Direct and topic exchanges can also implement event routing when only selected subscribers should receive an event; fanout is the simplest broadcast case.
+Notice that the publisher does not know how many subscribers exist. Adding another subscriber means adding another queue/binding; the publisher does not change.
 
 ---
 
-# 8. Request/Reply over RabbitMQ
+# 4. Direct Exchange: exact routing keys
 
-Run:
+## Terminal 1 — start consumers
 
 ```bash
-make rpc-demo
+make -f Makefile.services direct
+make -f Makefile.services direct-logs
 ```
 
-The flow is:
+Bindings:
+
+```text
+                         orders.direct
+                              |
+              +---------------+----------------+
+              |                                |
+       order.created                     order.failed
+              |                                |
+              +-----------> audit-service <----+
+                                               |
+                                               +--> failure-monitor
+```
+
+## Terminal 2 — publish events
+
+```bash
+make -f Makefile.publishers direct
+```
+
+The publisher sends one `order.created` event and one `order.failed` event.
+
+A **direct exchange** performs exact matching between the message routing key and queue binding keys.
+
+Inspect the bindings:
+
+```bash
+make -f Makefile.services bindings
+```
+
+### Source code to inspect
+
+- `demos/direct/publisher.py` chooses the routing key (`order.created` or `order.failed`) and passes it to `basic_publish()`.
+- `demos/direct/consumer.py` reads `BINDING_KEYS` from the environment and creates one binding for each key.
+- `audit-service` is bound to both keys, while `failure-monitor` is bound only to `order.failed`. Both containers execute the **same Python consumer module** with different configuration.
+
+This is useful to distinguish the **message routing key** carried at publish time from the **binding keys** configured on queues.
+
+---
+
+# 5. Topic Exchange: wildcard routing
+
+## Terminal 1 — start consumers
+
+```bash
+make -f Makefile.services topic
+make -f Makefile.services topic-logs
+```
+
+Consumers bind with:
+
+```text
+order-history     -> order.*
+onboarding-flow   -> order.created
+```
+
+## Terminal 2 — publish events
+
+```bash
+make -f Makefile.publishers topic
+```
+
+The publisher sends:
+
+```text
+order.created
+order.updated
+order.failed
+```
+
+Expected routing:
+
+```text
+order.created  -> both consumers
+order.updated  -> order-history only
+order.failed   -> order-history only
+```
+
+With a topic exchange:
+
+- `*` matches exactly one routing-key word;
+- `#` matches zero or more words.
+
+### Source code to inspect
+
+- `demos/topic/publisher.py` publishes the same message shape with different routing keys.
+- `demos/topic/consumer.py` has a single `BINDING_KEY`, provided by Compose.
+- `order-history` uses `order.*`; `onboarding-flow` uses the exact pattern `order.created`.
+
+The exchange performs pattern matching; consumers do not receive every message and then filter in Python. Non-matching messages are never routed to their queues.
+
+---
+
+# 6. Headers Exchange: route using metadata
+
+## Terminal 1 — start consumers
+
+```bash
+make -f Makefile.services headers
+make -f Makefile.services headers-logs
+```
+
+Consumers are configured as:
+
+```text
+eu-order-handler  -> type=order AND region=eu
+payment-handler   -> type=payment
+```
+
+## Terminal 2 — publish messages
+
+```bash
+make -f Makefile.publishers headers
+```
+
+The publisher sends:
+
+```text
+{type=order,   region=eu}
+{type=order,   region=us}
+{type=payment, region=eu}
+```
+
+Unlike direct and topic exchanges, a **headers exchange** ignores the routing key and evaluates AMQP header values.
+
+### Source code to inspect
+
+- `demos/headers/publisher.py` places `type` and `region` in `BasicProperties.headers`. The routing key is intentionally set to `ignored.by.headers.exchange`.
+- `demos/headers/consumer.py` builds the binding arguments as `{"x-match": "all", ...}`. Therefore all configured headers must match.
+- Compose injects different `BINDING_HEADERS` JSON values for `eu-order-handler` and `payment-handler`.
+
+Changing `x-match` from `all` to `any` would change the semantics: one matching header would be sufficient. The current lab uses `all` to keep the routing rule deterministic.
+
+---
+
+# 7. Asynchronous Request/Reply
+
+## Terminal 1 — start the pricing service
+
+```bash
+make -f Makefile.services rpc
+make -f Makefile.services rpc-logs
+```
+
+## Terminal 2 — run the clients
+
+```bash
+make -f Makefile.publishers rpc
+```
 
 ```text
 Client
   |
   | request
-  | reply_to = callback queue
   | correlation_id = X
+  | reply_to = callback queue
   v
-pricing.rpc
+pricing.rpc queue
   |
   v
 Pricing Service
   |
-  | reply
-  | correlation_id = X
+  | reply correlation_id = X
   v
 callback queue
   |
   v
-Client matches reply X to request X
+Client matches X
 ```
 
-The client creates an exclusive callback queue and places its name in the `reply_to` property.
+The transport is asynchronous messaging even though the example client chooses to wait for the response.
 
-A unique `correlation_id` identifies the request. The service copies the same ID into the reply so the client can associate responses with requests.
+The client creates an exclusive callback queue and sends its name in `reply_to`. A unique `correlation_id` identifies the request. The service copies the same ID into the reply so the client can match responses to requests.
 
-The important distinction is:
+### Source code to inspect
 
-> The transport remains asynchronous even if the client deliberately blocks while waiting for the reply.
+- `demos/request_reply/client.py` declares a server-named, exclusive, auto-delete callback queue. It publishes the request with both `reply_to` and `correlation_id`.
+- The client registers a callback on that reply queue and ignores replies whose `correlation_id` does not match the outstanding request.
+- `demos/request_reply/server.py` consumes `pricing.rpc`, calculates the response, publishes it to `properties.reply_to`, copies `properties.correlation_id`, and only then ACKs the request.
 
-Request/reply over messaging can therefore recreate synchronous-looking semantics on top of an asynchronous transport.
+The example is intentionally **synchronous from the caller's point of view** because the loop waits until a matching response arrives. The underlying transport is still asynchronous messaging. A production client could instead continue other work and handle replies later.
 
 ---
 
-# 9. Reliability, Duplicates, and Ordering
+# 8. Redelivery after a consumer crash
 
-Reliability in messaging is not one feature. Several mechanisms address different failure modes.
+This example is intentionally split into **three explicit actions** so that the broker behavior is visible.
 
-## 9.1 Manual ACK, failure, and redelivery
-
-Run:
+## Terminal 1 — start a consumer that will crash before ACK
 
 ```bash
-make redelivery-demo
+make -f Makefile.services redelivery-crash
+make -f Makefile.services redelivery-crash-logs
 ```
 
-The deterministic sequence is:
+The consumer is now waiting on `reliability.redelivery`.
 
-```text
-1. publish one persistent message
-2. consumer receives it
-3. consumer crashes BEFORE ACK
-4. RabbitMQ makes the unacknowledged message available again
-5. a new consumer receives the same message
-6. the second consumer ACKs it
+## Terminal 2 — publish one persistent message
+
+```bash
+make -f Makefile.publishers redelivery
 ```
 
-The second delivery reports:
+The first consumer receives the message and terminates **before acknowledging it**.
+
+Inspect the stopped consumer and queue state if desired:
+
+```bash
+make -f Makefile.services status
+make -f Makefile.services queues
+```
+
+## Terminal 1 — start the recovery consumer
+
+```bash
+make -f Makefile.services redelivery-recover
+make -f Makefile.services redelivery-recover-logs
+```
+
+The second delivery prints:
 
 ```text
 redelivered=True
 ```
 
-This shows why an application must be prepared for **at-least-once delivery**: the same business message may be processed more than once.
+Sequence:
 
-An ACK does not mean "exactly once" business execution. It tells RabbitMQ that this delivery has been successfully handled from the consumer's point of view.
-
-## 9.2 Idempotent Consumer
-
-Run:
-
-```bash
-make duplicate-demo
+```text
+publish
+   |
+   v
+consumer receives
+   |
+   v
+crash before ACK
+   |
+   v
+RabbitMQ requeues
+   |
+   v
+new consumer receives same message
+   |
+   v
+ACK
 ```
 
-The publisher intentionally sends the same `message_id` twice and then sends a new message.
+This demonstrates **at-least-once delivery**. An acknowledgement is not the same thing as exactly-once business processing.
 
-The consumer stores processed IDs in SQLite inside a Docker volume:
+### Source code to inspect
+
+- `demos/reliability/redelivery_publisher.py` publishes one persistent message and assigns a `message_id`. It purges the demo queue first so the classroom run starts from a known state.
+- `demos/reliability/redelivery_consumer.py --crash-before-ack` calls `os._exit(3)` after receiving the delivery but before `basic_ack()`. This deliberately terminates the process without giving the broker an ACK.
+- The recovery consumer runs the same module without the crash flag and prints `method.redelivered`.
+
+RabbitMQ redelivery means **the broker did not observe an acknowledgement for the previous delivery**. It does not prove that the previous consumer performed no business side effect before crashing. This is why at-least-once delivery and idempotent processing must be considered together.
+
+---
+
+# 9. Idempotent Consumer and duplicate messages
+
+## Terminal 1 — start the idempotent consumer
+
+```bash
+make -f Makefile.services duplicate
+make -f Makefile.services duplicate-logs
+```
+
+## Terminal 2 — publish deliberate duplicates
+
+```bash
+make -f Makefile.publishers duplicate
+```
+
+The publisher sends the same `message_id` twice and then sends one unique message.
 
 ```text
 message arrives
@@ -729,7 +638,7 @@ is message_id already stored?
   |       |
  no      yes
   |       |
-process  skip effect
+process  skip
   |       |
 store ID  |
   +---+---+
@@ -737,55 +646,40 @@ store ID  |
      ACK
 ```
 
-This is the **Idempotent Consumer** pattern: duplicate delivery is acknowledged, but the protected business effect is applied only once.
+The consumer stores processed IDs in SQLite inside a Docker volume. Duplicate delivery is acknowledged, but the business effect is not executed again.
 
-In a production system, the processed-message record normally needs transaction semantics compatible with the business update it protects.
+### Source code to inspect
 
-Reset the stored teaching state with:
+- `demos/reliability/duplicate_publisher.py` deliberately sends the same `message_id` twice, then sends a different ID.
+- `demos/reliability/idempotent_consumer.py` uses `message_id` as the primary key of `processed_messages` in SQLite.
+- On a duplicate, the consumer skips the simulated business action but still ACKs the delivery so RabbitMQ can remove it.
 
-```bash
-make reset
-```
+The SQLite table is a teaching version of an **inbox / processed-message store**. In a real service, the business update and the record that marks a message as processed should be coordinated carefully (often in the same local database transaction when possible). The example does not claim distributed exactly-once delivery.
 
-## 9.3 Durability and persistence
+---
 
-The demos use durable queues and persistent messages where reliability across broker restarts matters.
+# 10. Ordering by key
 
-Keep these concepts separate:
-
-```text
-manual ACK
-    -> consumer-side delivery completion / possible redelivery
-
-durable queue
-    -> queue definition can survive broker restart
-
-persistent message
-    -> message is marked for durable storage
-
-publisher confirm
-    -> producer can learn that RabbitMQ accepted responsibility for a publish
-```
-
-The lecture also introduces **publisher confirms**. The current lab does not have a dedicated publisher-confirm demo; it focuses on consumer acknowledgements, redelivery, duplicates, and ordering. A publisher confirm is not a consumer ACK and does not mean that a consumer has processed the message.
-
-## 9.4 Ordering with concurrent consumers
-
-With several consumers, messages can complete out of order even if the queue delivered them in sequence.
-
-Run:
+## Terminal 1 — start partition consumers
 
 ```bash
-make ordering-demo
+make -f Makefile.services ordering
+make -f Makefile.services ordering-logs
 ```
 
-The publisher interleaves events for two orders:
+## Terminal 2 — publish interleaved events
+
+```bash
+make -f Makefile.publishers ordering
+```
+
+The publisher emits:
 
 ```text
 A1 B1 A2 B2 A3 B3
 ```
 
-A direct exchange partitions them using the order key:
+A direct exchange partitions messages using the order key:
 
 ```text
                        orders.partitioned
@@ -803,17 +697,21 @@ A direct exchange partitions them using the order key:
               A1 A2 A3              B1 B2 B3
 ```
 
-The example does **not** claim global ordering across independently processed queues.
+The example does **not** claim global ordering across independently processed queues. It demonstrates a common strategy: route related messages with the same key to the same ordered processing path.
 
-Instead, it demonstrates the strategy used in the slides:
+> If order matters, define the scope in which it must be preserved.
 
-> If ordering matters, route messages with the same key to the same ordered processing path.
+### Source code to inspect
 
-For many systems, ordering per order, aggregate, customer, or another business key is more useful than one global order.
+- `demos/ordering/publisher.py` emits interleaved events for orders A and B, but routes them with `order.A` and `order.B`.
+- `demos/ordering/consumer.py` derives its queue and routing key from `ORDER_KEY`. Compose starts one instance for A and one for B.
+- Each key therefore has one queue and one consumer path in this demo, preserving the sequence within that partition.
+
+The ordering guarantee shown here is **per key / per queue**, not global. If several consumers were attached to the same partition queue and processed concurrently, completion order could diverge again.
 
 ---
 
-# 10. AsyncAPI and Architectural Trade-offs
+# 11. AsyncAPI: describe the asynchronous contract
 
 Open:
 
@@ -821,23 +719,23 @@ Open:
 asyncapi/order-events.yaml
 ```
 
-The file describes an event-driven contract using AsyncAPI 3.0 concepts.
+The document uses AsyncAPI 3.0 concepts:
 
 ```text
-AsyncAPI document
-├── servers
-│   └── where applications connect
-├── channels
-│   └── communication paths
-├── messages
-│   └── headers and payload schemas
-├── operations
-│   └── send / receive behavior
-└── protocol bindings
-    └── protocol-specific details
+Server
+  -> where the broker is
+
+Channel
+  -> logical communication path
+
+Message
+  -> headers/payload contract
+
+Operation
+  -> send or receive
 ```
 
-A useful analogy is:
+Architectural analogy:
 
 ```text
 REST                         Messaging
@@ -845,124 +743,175 @@ REST                         Messaging
 OpenAPI                      AsyncAPI
 HTTP endpoint                Channel
 request/response schema      Message schema
-HTTP operation               send/receive operation
+operation                    send/receive operation
 ```
 
-The AsyncAPI file is deliberately independent from the Python handlers. It is a **contract**, not the implementation of a consumer.
+The contract is deliberately independent from the Python implementation.
 
-## Architectural trade-offs
+### Source code to inspect
 
-Asynchronous messaging can reduce direct temporal coupling:
+`asyncapi/order-events.yaml` documents the `OrderCreated` message on the logical `orders.topic` channel. It describes:
 
-```text
-Synchronous collaboration
-Service A ---> Service B
-               must answer now
+- the RabbitMQ server;
+- the channel address;
+- the message payload schema;
+- one `send` operation and one `receive` operation.
 
-Asynchronous collaboration
-Service A ---> RabbitMQ ---> Service B
-                 |
-                 +-- can buffer while B is temporarily offline
-```
-
-This improves some availability scenarios, but it does not make distributed-system complexity disappear.
-
-Asynchronous systems introduce or make more visible concerns such as:
-
-- eventual consistency;
-- duplicate delivery and idempotency;
-- ordering boundaries;
-- backpressure and queue growth;
-- schema evolution;
-- poison messages and retry/dead-letter strategies;
-- harder end-to-end tracing and observability;
-- reliable operation of the broker itself.
-
-The design goal is therefore not "use messaging everywhere". The goal is to choose asynchronous collaboration where temporal decoupling, buffering, independent scaling, or event distribution provide a concrete architectural advantage.
+The Python examples do **not** generate code from this file and do not validate runtime messages against it. In this lab AsyncAPI is used as a contract/documentation artifact, analogous to the role OpenAPI played in the REST examples. A later extension could introduce contract validation or code generation without changing the messaging concepts demonstrated here.
 
 ---
 
-## Command summary
+## Start all long-running consumers at once
+
+For a final walkthrough you can start RabbitMQ and all long-running consumer scenarios together:
 
 ```bash
-# Broker and inspection
-make up
-make management
-make status
-make queues
-make exchanges
-make bindings
-
-# Exchange types
-make direct-demo
-make fanout-demo
-make topic-demo
-make headers-demo
-
-# Point-to-point / work queues
-make work-demo
-
-# Publish/subscribe lifecycle
-make fanout-up
-docker compose stop fanout-notification
-docker compose --profile tools run --rm lab \
-  python -m demos.fanout.publisher --order-id order-456
-make queues
-docker compose start fanout-notification
-docker compose logs --tail=30 fanout-notification
-
-# Request/reply
-make rpc-demo
-
-# Reliability and ordering
-make redelivery-demo
-make duplicate-demo
-make ordering-demo
-
-# Cleanup
-make down
-make reset
+make -f Makefile.services all
 ```
 
+Then use the publisher Makefile from another terminal:
+
+```bash
+make -f Makefile.publishers work
+make -f Makefile.publishers fanout
+make -f Makefile.publishers direct
+make -f Makefile.publishers topic
+make -f Makefile.publishers headers
+make -f Makefile.publishers rpc
+make -f Makefile.publishers duplicate
+make -f Makefile.publishers ordering
+```
+
+The redelivery scenario remains separate because it intentionally requires a consumer crash and restart.
+
 ---
 
-## Mapping RabbitMQ concepts to the project
+## Source map for a classroom walkthrough
 
-| RabbitMQ / messaging concept | In this lab |
+If you want to open only a few files while presenting the lab, use this sequence:
+
+| Concept | Publisher / client | Consumer / service | Key line of reasoning |
+|---|---|---|---|
+| Work Queue | `demos/work_queue/publisher.py` | `demos/work_queue/worker.py` | same queue + competing consumers + ACK + prefetch |
+| Fanout | `demos/fanout/publisher.py` | `demos/fanout/consumer.py` | one exchange, one queue per subscriber |
+| Direct | `demos/direct/publisher.py` | `demos/direct/consumer.py` | exact routing-key / binding-key match |
+| Topic | `demos/topic/publisher.py` | `demos/topic/consumer.py` | wildcard binding patterns |
+| Headers | `demos/headers/publisher.py` | `demos/headers/consumer.py` | metadata-based routing with `x-match` |
+| Request/Reply | `demos/request_reply/client.py` | `demos/request_reply/server.py` | `reply_to` + `correlation_id` |
+| Redelivery | `demos/reliability/redelivery_publisher.py` | `demos/reliability/redelivery_consumer.py` | crash before ACK -> broker redelivery |
+| Idempotency | `demos/reliability/duplicate_publisher.py` | `demos/reliability/idempotent_consumer.py` | repeated `message_id` -> skip duplicate effect |
+| Ordering | `demos/ordering/publisher.py` | `demos/ordering/consumer.py` | route the same key to the same processing path |
+
+A useful teaching rule is to read **the topology first** (exchange, queue, binding), then the call to `basic_publish()`, and finally the consumer callback and its ACK behavior.
+
+---
+
+## RabbitMQ concepts mapped to this lab
+
+| Concept | In this lab |
 |---|---|
-| Producer | one-shot Dockerized publisher scripts |
-| Message | JSON payload plus AMQP properties and headers |
+| Producer | one-shot Dockerized scripts in `Makefile.publishers` |
+| Consumer | long-running Dockerized services in `Makefile.services` |
+| Message | JSON body + AMQP properties/headers |
 | Exchange | `orders.fanout`, `orders.direct`, `orders.topic`, `orders.headers`, ... |
-| Binding | routing rules connecting exchanges to queues |
-| Queue | buffers such as `orders.work`, `inventory.events`, ... |
-| Consumer | long-running Dockerized Python services |
-| Consumer ACK | sent manually after successful processing in reliability-sensitive examples |
-| Routing key | used by direct and topic exchanges |
-| Message headers | used by headers exchange and reliability metadata |
-| Prefetch | bounds outstanding work in the work-queue example |
-| `reply_to` | identifies the reply destination in request/reply |
-| `correlation_id` | matches a reply to its request |
-| AsyncAPI | `asyncapi/order-events.yaml` |
+| Binding | rules connecting exchanges to queues |
+| Queue | durable buffers such as `orders.work` or `inventory.events` |
+| ACK | sent manually after successful processing in reliability-sensitive demos |
+| Routing key | used by direct/topic exchanges |
+| Message headers | used by the headers exchange and message IDs |
+| Prefetch | limits outstanding work in the work-queue example |
 
 ---
 
-## Suggested classroom sequence
+## Why the examples use JSON
 
-If time is limited, run the examples in exactly this order:
+AMQP transports bytes. RabbitMQ does not require JSON: the body could contain JSON, Protobuf, Avro, text, or another binary format.
+
+The lab uses JSON because the focus is on **messaging topology and delivery semantics**, not serialization performance.
+
+AMQP properties remain separate from the message body and are used for metadata such as:
 
 ```text
-1. make up + make queues/exchanges/bindings
-2. make direct-demo
-3. make fanout-demo
-4. make topic-demo
-5. make headers-demo
-6. make work-demo
-7. fanout subscriber-offline buffering experiment
-8. make rpc-demo
-9. make redelivery-demo
-10. make duplicate-demo
-11. make ordering-demo
-12. inspect asyncapi/order-events.yaml
+message_id
+correlation_id
+reply_to
+content_type
+custom headers
 ```
 
-This execution order mirrors the conceptual progression in the slides: **messages and channels -> interaction styles -> broker -> AMQP flow -> routing -> work queues -> publish/subscribe -> request/reply -> reliability -> contract and trade-offs**.
+---
+
+## Broker-based messaging and availability
+
+Asynchronous broker-based communication reduces direct temporal coupling:
+
+```text
+Synchronous call
+Service A ---> Service B
+               must be available now
+
+Asynchronous messaging
+Service A ---> RabbitMQ ---> Service B
+                 |
+                 +-- can buffer while B is unavailable
+```
+
+This does not make failures disappear. RabbitMQ becomes infrastructure that must be operated reliably, and applications must handle delayed delivery, duplicate delivery, poison messages, back pressure, schema evolution, and observability.
+
+---
+
+## Useful classroom sequence
+
+```text
+Terminal 1: start consumers       Terminal 2: publish
+          |                                 |
+          +------------ observe ------------+
+                        |
+                        v
+Work Queue
+point-to-point + ACK + prefetch
+        |
+        v
+Fanout
+publish/subscribe
+        |
+        v
+Direct / Topic / Headers
+routing policies
+        |
+        v
+Request/Reply
+reply_to + correlation_id
+        |
+        v
+Redelivery
+crash before ACK
+        |
+        v
+Idempotent Consumer
+duplicate message ID
+        |
+        v
+Ordering by key
+partitioned processing
+        |
+        v
+AsyncAPI
+message contract
+```
+
+---
+
+## Stop and clean up
+
+Stop the complete lab while keeping persisted RabbitMQ and SQLite volumes:
+
+```bash
+make -f Makefile.services down
+```
+
+Remove containers **and all persisted demo state**:
+
+```bash
+make -f Makefile.services reset
+```
