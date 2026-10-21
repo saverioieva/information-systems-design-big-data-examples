@@ -55,7 +55,7 @@ In direct messaging the producer must locate the receiver, and receiver outages 
 - **AMQP 1.0** is an independent OASIS/ISO standard centered on transport concepts (connections, sessions, sender/receiver links, flow credit, message transfer, and delivery settlement). It is **not wire-compatible** with AMQP 0-9-1.
 - **RabbitMQ 4.x supports both protocols natively on the same TCP port (5672)**. The final example uses **Qpid Proton** to speak AMQP 1.0 to that same broker.
 - RabbitMQ-specific AMQP 1.0 **v2 addresses** such as `/queues/orders.amqp10` represent the broker's queues. AMQP 1.0 itself does not prescribe an internal broker topology. The queue must already exist.
-- Pika is used **only for the topology preparation and optional cross-protocol publisher** in the final exercise; the final producer and consumer both send/receive using Proton/AMQP 1.0.
+- The **AMQP 1.0 demo queue is provisioned declaratively by RabbitMQ** from `rabbitmq/definitions.json` at broker startup; Proton is used for sending/receiving. Pika is used in the final exercise **only for the optional cross-protocol publisher**.
 
 Official references: [RabbitMQ AMQP 1.0](https://www.rabbitmq.com/docs/amqp), [Qpid Proton Python API](https://qpid.apache.org/releases/qpid-proton-0.40.0/proton/python/docs/), [AMQP 1.0 OASIS standard](https://www.oasis-open.org/standard/amqp/).
 
@@ -148,7 +148,10 @@ asynchronous-messaging-rabbitmq/
 │   ├── request_reply/
 │   ├── reliability/
 │   ├── ordering/
-│   └── amqp10/                 # Proton AMQP 1.0 + Pika setup
+│   └── amqp10/                 # Proton AMQP 1.0 (+ optional Pika interop)
+├── rabbitmq/
+│   ├── rabbitmq.conf          # Broker-side definitions import
+│   └── definitions.json       # Teaching user, vhost and orders.amqp10 queue
 ├── Dockerfile                # Pika image for existing demos
 ├── Dockerfile.amqp10         # Separate Qpid Proton image
 ├── docker-compose.yml
@@ -159,7 +162,7 @@ asynchronous-messaging-rabbitmq/
 └── README.md
 ```
 
-`docker-compose.yml` is the composition root. All Pika demos use the original Python image. The new AMQP 1.0 example uses a **separate Proton image** to avoid changing existing demo dependencies. Both connect to the **same RabbitMQ broker**.
+`docker-compose.yml` is the composition root. All Pika demos use the original Python image. The AMQP 1.0 example uses a **separate Proton image** to avoid changing existing demo dependencies. Both connect to the **same RabbitMQ broker**. Broker startup imports `rabbitmq/definitions.json`, which pre-creates `orders.amqp10` and the classroom-only `student` account.
 
 ## How to read the source code
 
@@ -186,7 +189,7 @@ Start with these shared files:
 | `docker-compose.yml` | Runs one RabbitMQ broker and parameterizes reusable consumer modules with environment variables. Compose profiles keep scenarios independent. |
 | `Makefile.services` | Owns the lifecycle of RabbitMQ and long-running consumers. It waits for expected queues so a publisher is not started before the topology exists. |
 | `Makefile.publishers` | Runs one-shot publishers/clients in disposable containers. It deliberately does not start consumers. |
-| `demos/amqp10/setup.py` | Declares `orders.amqp10` via Pika before Proton attaches to `/queues/orders.amqp10`. |
+| `rabbitmq/rabbitmq.conf`, `rabbitmq/definitions.json` | Configure broker-side, declarative provisioning of the AMQP 1.0 demo queue and the classroom login. |
 | `demos/amqp10/publisher.py`, `consumer.py` | Send and receive over AMQP 1.0 with Qpid Proton; explicitly settle messages. |
 | `Dockerfile.amqp10` | Installs the AMQP 1.0 client without changing the original Pika image. |
 | `asyncapi/order-events.yaml` | Documents one asynchronous contract independently from the Python implementation. |
@@ -203,7 +206,9 @@ This helper is infrastructure code for the Pika demos; it is not a domain abstra
 
 ### Where the messaging topology is declared
 
-RabbitMQ topology is created with idempotent declarations such as `exchange_declare()`, `queue_declare()`, and `queue_bind()`. Most consumers declare the topology they need when they start. Publishers also declare the exchange or queue they publish to so that a standalone publisher fails less mysteriously if the broker was reset.
+In the **AMQP 0-9-1 demos**, RabbitMQ topology is created with repeatable declarations such as `exchange_declare()`, `queue_declare()`, and `queue_bind()`. Most consumers declare their own topology when they start; publishers may also declare the destinations they publish to.
+
+In the **AMQP 1.0 demo**, `orders.amqp10` is an **infrastructure-managed queue** defined in `rabbitmq/definitions.json` and imported when RabbitMQ boots. The Proton producer and consumer simply attach to the existing RabbitMQ v2 address `/queues/orders.amqp10`. These two provisioning styles are architectural choices, **not** exclusive requirements of AMQP versions: AMQP 0-9-1 services can use pre-provisioned topology too, while RabbitMQ-specific AMQP 1.0 clients can offer management operations. Generic Proton intentionally demonstrates only the standard AMQP 1.0 data path.
 
 The important distinction is:
 
@@ -815,17 +820,19 @@ This is the **final hands-on example**. It shows how RabbitMQ 4.x supports **bot
 ## Topology and protocol boundary
 
 ```text
-Pika / AMQP 0-9-1              RabbitMQ 4.x                 Proton / AMQP 1.0
-(setup only)              (one broker, port 5672)           (send + receive)
-     |                            |                                |
-     +---- queue_declare() ------>+ orders.amqp10                   |
-                                  |                                |
-Proton AMQP 1.0 publisher ------>+ /queues/orders.amqp10 -------->+ Proton consumer
-                                  |                                +-- receiver.accept()
-Optional Pika 0-9-1 publisher -->+ (cross-protocol conversion) -->+ same Proton consumer
+Infrastructure (deployment)      RabbitMQ 4.x              Application (AMQP 1.0)
+   rabbitmq.conf               (one broker, port 5672)           Qpid Proton
+         |                            |                              |
+   definitions.json -- boot -->+ orders.amqp10                    |
+                                |                              |
+Proton AMQP 1.0 publisher ---->+ /queues/orders.amqp10 -------->+ Proton consumer
+                                |                              +-- receiver.accept()
+Optional Pika 0-9-1 publisher ->+ (cross-protocol delivery) ---->+ same Proton consumer
 ```
 
-**Important:** `/queues/orders.amqp10` is the **RabbitMQ AMQP 1.0 v2 address format**, not a universal AMQP 1.0 address. The queue must exist **before** Proton creates sender/receiver links. In this example it is declared with Pika, demonstrating the difference between RabbitMQ's queue topology and the AMQP 1.0 transfer protocol. For production AMQP 1.0 applications, use an appropriate topology management tool or supported client management API instead of coupling setup to Pika.
+**Important:** `/queues/orders.amqp10` is a **RabbitMQ-specific AMQP 1.0 v2 address**, not a universal AMQP 1.0 address. The queue must exist **before** Proton attaches sender/receiver links. In this exercise RabbitMQ itself creates that queue from **declarative definitions** at startup. Producers and consumers do not require Pika or broker-management privileges. This demonstrates **infrastructure-managed topology** versus the **application-managed declarations** used elsewhere in the lab. Either approach can be chosen independently of the AMQP protocol version.
+
+**Provisioning details:** `rabbitmq/rabbitmq.conf` configures `definitions.import_backend = local_filesystem`; the bind-mounted `rabbitmq/definitions.json` declares the durable `orders.amqp10` queue, the `/` vhost, and the **classroom-only** `student` account (the password is stored as a SHA-256 salted hash). RabbitMQ skips automatic default user/vhost creation when importing definitions into an uninitialized node; therefore the file includes those resources explicitly. Existing broker state is **not overwritten** by a subsequent definitions import. Use the lab `reset` target if you need a new, clean initialization (**destroys lab data**).
 
 ## Terminal 1 — start the service side
 
@@ -834,12 +841,13 @@ make -f Makefile.services amqp10
 make -f Makefile.services amqp10-logs
 ```
 
-The first command does four things in order:
+The first command does three things in order:
 
-1. Starts the existing RabbitMQ 4.x broker.
-2. Builds the original Pika `lab` container.
-3. Runs `demos/amqp10/setup.py` (Pika/AMQP 0-9-1) to declare durable queue `orders.amqp10`.
-4. Builds/starts the **separate Proton consumer** using `Dockerfile.amqp10`.
+1. Starts RabbitMQ 4.x, which imports `rabbitmq/definitions.json` at startup (or retains compatible existing resources from its persistent volume).
+2. Waits for `orders.amqp10` to be available in the broker.
+3. Builds/starts the **separate Proton consumer** using `Dockerfile.amqp10`.
+
+Unlike the earlier lab revision, **no Pika setup container or `setup.py` is needed**.
 
 The Proton image builds the upstream `python-qpid-proton==0.40.0` source distribution. **Its first Docker build can take longer** than the existing Pika image because it compiles native dependencies.
 
@@ -867,14 +875,15 @@ The same Proton AMQP 1.0 consumer prints a message with `"source": "pika-amqp-0-
 
 | File | What students should notice |
 |---|---|
-| `demos/amqp10/setup.py` | Predeclares the durable RabbitMQ queue with Pika/AMQP 0-9-1. |
+| `rabbitmq/rabbitmq.conf` | Enables broker-side definitions import from a read-only file mounted by Compose. |
+| `rabbitmq/definitions.json` | Declares the `orders.amqp10` queue, `/` vhost and classroom-only `student` user/permissions. |
 | `demos/amqp10/settings.py` | Proton connection, SASL credentials, and RabbitMQ-specific `/queues/...` v2 address. |
 | `demos/amqp10/publisher.py` | `proton.Message`, `create_sender()`, and synchronous broker settlement via `send()`. |
 | `demos/amqp10/consumer.py` | `create_receiver(credit=1)`, `receive()`, explicit `accept()`/`reject()` outcomes. |
 | `demos/amqp10/pika_publisher.py` | Optional cross-protocol producer using Pika and the default exchange. |
 | `Dockerfile.amqp10` | Builds the Proton Python client in a separate Docker image. |
 
-**Security note:** this demonstration intentionally uses username/password SASL PLAIN on the isolated Docker network, without TLS. Real deployments should use TLS (`amqps`), appropriate credentials, and least-privilege access.
+**Security note:** this demonstration intentionally uses the shared `student/student` classroom login (administrator permissions) and SASL PLAIN on the isolated Docker network, without TLS. The password is not stored in plaintext in definitions, but it is **public knowledge**; the hash is **not a production secret**. In real deployments use secret management, distinct least-privilege accounts, TLS (`amqps`), and an explicit topology deployment workflow (for example: definitions import, HTTP Management API, or RabbitMQ Topology Operator on Kubernetes).
 
 Stop the Proton consumer independently when finished:
 

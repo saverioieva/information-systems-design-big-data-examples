@@ -171,14 +171,12 @@ redelivery-recover-logs:
 redelivery-stop:
 	$(COMPOSE) stop redelivery-crash-consumer redelivery-recovery-consumer
 
-# AMQP 1.0 needs a pre-existing queue for RabbitMQ v2 /queues/<queue> addresses.
-# Create it once using Pika (AMQP 0-9-1), then run the Proton consumer.
+# RabbitMQ imports orders.amqp10 from declarative definitions at boot.
+# The queue exists before the Proton consumer attaches: no Pika setup step.
 amqp10:
 	$(COMPOSE) up -d rabbitmq
-	$(COMPOSE) --profile tools build lab
-	$(COMPOSE) --profile tools run --rm lab python -m demos.amqp10.setup
-	$(COMPOSE) --profile amqp10 up -d --build rabbitmq amqp10-consumer
 	$(call wait_for_queue,orders.amqp10)
+	$(COMPOSE) --profile amqp10 up -d --build rabbitmq amqp10-consumer
 
 amqp10-logs:
 	$(COMPOSE) logs -f amqp10-consumer

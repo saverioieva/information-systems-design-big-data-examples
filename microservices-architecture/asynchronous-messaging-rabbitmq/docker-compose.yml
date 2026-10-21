@@ -18,9 +18,8 @@ x-lab-service: &lab-service
 services:
   rabbitmq:
     image: rabbitmq:4-management
-    environment:
-      RABBITMQ_DEFAULT_USER: student
-      RABBITMQ_DEFAULT_PASS: student
+    # Credentials, vhost and the AMQP 1.0 teaching queue are provisioned
+    # from rabbitmq/definitions.json. Pika demos still declare their own topology.
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -31,6 +30,8 @@ services:
       retries: 20
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     networks:
       - messaging
 
@@ -174,7 +175,7 @@ services:
       ORDER_KEY: B
 
   # AMQP 1.0: same RabbitMQ 4.x broker, different client and protocol.
-  # Queue creation is performed first by demos.amqp10.setup (Pika 0-9-1).
+  # The orders.amqp10 queue is imported from rabbitmq/definitions.json at boot.
   amqp10-consumer:
     image: async-rabbitmq-proton:local
     build:
