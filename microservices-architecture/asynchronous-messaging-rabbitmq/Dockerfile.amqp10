@@ -1,0 +1,22 @@
+# Separate image: existing Pika/AMQP 0-9-1 demos do not need Proton build dependencies.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# python-qpid-proton 0.40.0 ships as a source distribution on Linux.
+# Build it with its native C dependencies. SASL modules enable PLAIN auth
+# against RabbitMQ on the internal teaching network.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake pkg-config uuid-dev libssl-dev \
+    libsasl2-dev libsasl2-modules \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir python-qpid-proton==0.40.0
+
+COPY demos/amqp10 ./demos/amqp10
+COPY demos/__init__.py ./demos/__init__.py
+
+CMD ["python", "-m", "demos.amqp10.consumer"]

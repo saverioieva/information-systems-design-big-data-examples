@@ -1,7 +1,8 @@
 COMPOSE=docker compose
 LAB=$(COMPOSE) --profile tools run --rm --no-deps lab
+PROTON=$(COMPOSE) --profile amqp10 run --rm --no-deps amqp10-consumer
 
-.PHONY: help check-broker work fanout direct topic headers rpc duplicate redelivery ordering
+.PHONY: amqp10 amqp10-pika help check-broker work fanout direct topic headers rpc duplicate redelivery ordering
 
 help:
 	@echo "One-shot publishers/clients"
@@ -16,6 +17,8 @@ help:
 	@echo "  make -f Makefile.publishers duplicate"
 	@echo "  make -f Makefile.publishers redelivery"
 	@echo "  make -f Makefile.publishers ordering"
+	@echo "  make -f Makefile.publishers amqp10"
+	@echo "  make -f Makefile.publishers amqp10-pika   # optional cross-protocol demo"
 
 check-broker:
 	@$(COMPOSE) ps --status running -q rabbitmq | grep -q . || \
@@ -54,3 +57,11 @@ redelivery: check-broker
 
 ordering: check-broker
 	$(LAB) python -m demos.ordering.publisher
+
+# Proton uses AMQP 1.0. The Docker image is built by Makefile.services amqp10.
+amqp10: check-broker
+	$(PROTON) python -m demos.amqp10.publisher --count 3
+
+# Pika uses AMQP 0-9-1, consumed by the same Proton AMQP 1.0 receiver.
+amqp10-pika: check-broker
+	$(LAB) python -m demos.amqp10.pika_publisher

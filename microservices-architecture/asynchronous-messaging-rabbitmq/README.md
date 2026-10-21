@@ -1,8 +1,8 @@
 # Asynchronous Messaging with AMQP and RabbitMQ
 
-This lab introduces **asynchronous communication between microservices** using RabbitMQ and the AMQP 0-9-1 messaging model.
+This lab introduces **asynchronous messaging between microservices**, focusing on RabbitMQ message routing with **AMQP 0-9-1**, then closing with a hands-on **AMQP 1.0** example using Apache Qpid Proton and the same RabbitMQ 4.x broker.
 
-The examples are Docker-first: the host only needs Docker, Docker Compose, and `make`. No local Python, Pika, RabbitMQ CLI, or AMQP tooling is required.
+The examples are Docker-first: the host only needs Docker, Docker Compose, and `make`. No local Python, Pika, Proton, RabbitMQ CLI, or AMQP tooling is required.
 
 The lab deliberately separates **long-running services/consumers** from **one-shot publishers/clients**. This makes the message flow visible in class: first start the services, keep their logs open, then publish messages from a second terminal.
 
@@ -11,6 +11,7 @@ The lab deliberately separates **long-running services/consumers** from **one-sh
 By the end of the lab you should be able to explain and observe:
 
 - asynchronous communication through a **message broker**;
+- the difference between **AMQP 0-9-1**, **AMQP 1.0**, and the RabbitMQ product;
 - the difference between a **queue** and an **exchange**;
 - **point-to-point / competing-consumer** processing;
 - **publish/subscribe** with a queue per subscriber;
@@ -19,7 +20,44 @@ By the end of the lab you should be able to explain and observe:
 - **manual acknowledgements**, redelivery, and at-least-once processing;
 - why consumers should often be **idempotent**;
 - the relationship between **concurrency and ordering**;
-- how an **AsyncAPI** document can describe a message-based contract.
+- how an **AsyncAPI** document can describe a message-based contract;
+- how an **AMQP 1.0 sender and receiver** use Proton links, messages, and settlement;
+- how RabbitMQ can bridge a **Pika/0-9-1 publisher** to a **Proton/1.0 consumer**.
+
+---
+
+## How this lab follows the lecture slides
+
+The practical steps follow the sequence **messaging and broker → AMQP versions → RabbitMQ exchanges → work queues → publish/subscribe → request/reply → reliability and ordering → AsyncAPI → AMQP 1.0 in Python**.
+
+| Lecture topic | In this lab |
+|---|---|
+| Why use a broker? | Section 1, RabbitMQ UI, queue/broker inspection |
+| AMQP evolution and protocol choice | Concept notes below; final Proton exercise in Section 12 |
+| RabbitMQ message flow; direct/topic/headers exchanges | Sections 2–4 (fanout appears in the pub/sub exercise) |
+| Point-to-point and work queues | Section 5 |
+| Publish/subscribe | Section 6, fanout |
+| Request/reply | Section 7 |
+| Duplicates, redelivery, ordering | Sections 8–10 |
+| AsyncAPI | Section 11 |
+| AMQP 1.0 on RabbitMQ with Python | Section 12 |
+
+**Kafka connection to the slides:** Kafka's partitioned event-log model differs from the classic queues used here. Kafka is **not installed** in this RabbitMQ-focused lab; there is no Kafka practical exercise.
+
+### Why a broker?
+
+In direct messaging the producer must locate the receiver, and receiver outages need handling by the producer. A broker separates producers from consumers and can buffer messages during temporary outages. That introduces infrastructure that needs monitoring, high availability, capacity planning, and attention to eventual consistency, retries, and duplicates.
+
+### AMQP versions and their relationship to RabbitMQ
+
+- **AMQP** means **Advanced Message Queuing Protocol**.
+- **AMQP 0-9-1** prescribes exchange, binding, queue, and routing-key concepts. In Sections 1–11 the Python client is **Pika**.
+- **AMQP 1.0** is an independent OASIS/ISO standard centered on transport concepts (connections, sessions, sender/receiver links, flow credit, message transfer, and delivery settlement). It is **not wire-compatible** with AMQP 0-9-1.
+- **RabbitMQ 4.x supports both protocols natively on the same TCP port (5672)**. The final example uses **Qpid Proton** to speak AMQP 1.0 to that same broker.
+- RabbitMQ-specific AMQP 1.0 **v2 addresses** such as `/queues/orders.amqp10` represent the broker's queues. AMQP 1.0 itself does not prescribe an internal broker topology. The queue must already exist.
+- Pika is used **only for the topology preparation and optional cross-protocol publisher** in the final exercise; the final producer and consumer both send/receive using Proton/AMQP 1.0.
+
+Official references: [RabbitMQ AMQP 1.0](https://www.rabbitmq.com/docs/amqp), [Qpid Proton Python API](https://qpid.apache.org/releases/qpid-proton-0.40.0/proton/python/docs/), [AMQP 1.0 OASIS standard](https://www.oasis-open.org/standard/amqp/).
 
 ---
 
@@ -48,7 +86,7 @@ The work-queue and request/reply examples also use RabbitMQ's **default exchange
 
 ## Two Makefiles, two roles
 
-The project has intentionally been split into two Makefiles.
+The project has intentionally been split into two active Makefiles (`Makefile.services` and `Makefile.publishers`). The original single `Makefile` remains in the folder for backward compatibility, but this README follows the two-terminal flow.
 
 ```text
 Makefile.services
@@ -62,6 +100,7 @@ Makefile.publishers
     +-- one-shot publishers
     +-- request/reply clients
     +-- deterministic message generation
+    +-- Proton AMQP 1.0 publisher (final exercise)
 ```
 
 The normal classroom workflow uses **two terminals**.
@@ -108,16 +147,19 @@ asynchronous-messaging-rabbitmq/
 │   ├── headers/
 │   ├── request_reply/
 │   ├── reliability/
-│   └── ordering/
-├── Dockerfile
+│   ├── ordering/
+│   └── amqp10/                 # Proton AMQP 1.0 + Pika setup
+├── Dockerfile                # Pika image for existing demos
+├── Dockerfile.amqp10         # Separate Qpid Proton image
 ├── docker-compose.yml
 ├── Makefile.services
 ├── Makefile.publishers
+├── Makefile                 # legacy one-terminal targets (unchanged)
 ├── requirements.txt
 └── README.md
 ```
 
-`docker-compose.yml` is the composition root for the lab. All scenario-specific consumers use the same Dockerized Python image and the same RabbitMQ broker.
+`docker-compose.yml` is the composition root. All Pika demos use the original Python image. The new AMQP 1.0 example uses a **separate Proton image** to avoid changing existing demo dependencies. Both connect to the **same RabbitMQ broker**.
 
 ## How to read the source code
 
@@ -144,17 +186,20 @@ Start with these shared files:
 | `docker-compose.yml` | Runs one RabbitMQ broker and parameterizes reusable consumer modules with environment variables. Compose profiles keep scenarios independent. |
 | `Makefile.services` | Owns the lifecycle of RabbitMQ and long-running consumers. It waits for expected queues so a publisher is not started before the topology exists. |
 | `Makefile.publishers` | Runs one-shot publishers/clients in disposable containers. It deliberately does not start consumers. |
+| `demos/amqp10/setup.py` | Declares `orders.amqp10` via Pika before Proton attaches to `/queues/orders.amqp10`. |
+| `demos/amqp10/publisher.py`, `consumer.py` | Send and receive over AMQP 1.0 with Qpid Proton; explicitly settle messages. |
+| `Dockerfile.amqp10` | Installs the AMQP 1.0 client without changing the original Pika image. |
 | `asyncapi/order-events.yaml` | Documents one asynchronous contract independently from the Python implementation. |
 
-### Shared helper: `demos/common.py`
+### Shared Pika helper: `demos/common.py`
 
-All examples use the same helper instead of repeating connection boilerplate. In particular:
+All **AMQP 0-9-1 / Pika** examples use the same helper instead of repeating connection boilerplate. In particular:
 
 - `connection()` reads RabbitMQ coordinates from environment variables and retries the initial connection;
 - `encode()` / `decode()` keep the payload examples as JSON bytes;
 - `persistent_json_properties()` sets `content_type=application/json` and `delivery_mode=2`, and can add AMQP properties such as `message_id`, `correlation_id`, `reply_to`, or custom headers.
 
-This helper is infrastructure code for the lab; it is not a domain abstraction. The goal is simply to keep each scenario focused on the AMQP concept being demonstrated.
+This helper is infrastructure code for the Pika demos; it is not a domain abstraction. The goal is simply to keep each scenario focused on the AMQP concept being demonstrated.
 
 ### Where the messaging topology is declared
 
@@ -234,7 +279,153 @@ At this point RabbitMQ is running, but most application queues and exchanges do 
 
 ---
 
-# 2. Point-to-point processing with a Work Queue
+# 2. Direct Exchange: exact routing keys
+
+The exchange is the entry point for a published message; **bindings** decide which queues receive it. Exchange types covered in the following exercises are **direct**, **fanout**, **topic**, and **headers**. The fanout example is placed after the work queue to align with the lecture's publish/subscribe section.
+
+## Terminal 1 — start consumers
+
+```bash
+make -f Makefile.services direct
+make -f Makefile.services direct-logs
+```
+
+Bindings:
+
+```text
+                         orders.direct
+                              |
+              +---------------+----------------+
+              |                                |
+       order.created                     order.failed
+              |                                |
+              +-----------> audit-service <----+
+                                               |
+                                               +--> failure-monitor
+```
+
+## Terminal 2 — publish events
+
+```bash
+make -f Makefile.publishers direct
+```
+
+The publisher sends one `order.created` event and one `order.failed` event.
+
+A **direct exchange** performs exact matching between the message routing key and queue binding keys.
+
+Inspect the bindings:
+
+```bash
+make -f Makefile.services bindings
+```
+
+### Source code to inspect
+
+- `demos/direct/publisher.py` chooses the routing key (`order.created` or `order.failed`) and passes it to `basic_publish()`.
+- `demos/direct/consumer.py` reads `BINDING_KEYS` from the environment and creates one binding for each key.
+- `audit-service` is bound to both keys, while `failure-monitor` is bound only to `order.failed`. Both containers execute the **same Python consumer module** with different configuration.
+
+This is useful to distinguish the **message routing key** carried at publish time from the **binding keys** configured on queues.
+
+---
+
+# 3. Topic Exchange: wildcard routing
+
+## Terminal 1 — start consumers
+
+```bash
+make -f Makefile.services topic
+make -f Makefile.services topic-logs
+```
+
+Consumers bind with:
+
+```text
+order-history     -> order.*
+onboarding-flow   -> order.created
+```
+
+## Terminal 2 — publish events
+
+```bash
+make -f Makefile.publishers topic
+```
+
+The publisher sends:
+
+```text
+order.created
+order.updated
+order.failed
+```
+
+Expected routing:
+
+```text
+order.created  -> both consumers
+order.updated  -> order-history only
+order.failed   -> order-history only
+```
+
+With a topic exchange:
+
+- `*` matches exactly one routing-key word;
+- `#` matches zero or more words.
+
+### Source code to inspect
+
+- `demos/topic/publisher.py` publishes the same message shape with different routing keys.
+- `demos/topic/consumer.py` has a single `BINDING_KEY`, provided by Compose.
+- `order-history` uses `order.*`; `onboarding-flow` uses the exact pattern `order.created`.
+
+The exchange performs pattern matching; consumers do not receive every message and then filter in Python. Non-matching messages are never routed to their queues.
+
+---
+
+# 4. Headers Exchange: route using metadata
+
+## Terminal 1 — start consumers
+
+```bash
+make -f Makefile.services headers
+make -f Makefile.services headers-logs
+```
+
+Consumers are configured as:
+
+```text
+eu-order-handler  -> type=order AND region=eu
+payment-handler   -> type=payment
+```
+
+## Terminal 2 — publish messages
+
+```bash
+make -f Makefile.publishers headers
+```
+
+The publisher sends:
+
+```text
+{type=order,   region=eu}
+{type=order,   region=us}
+{type=payment, region=eu}
+```
+
+Unlike direct and topic exchanges, a **headers exchange** ignores the routing key and evaluates AMQP header values.
+
+### Source code to inspect
+
+- `demos/headers/publisher.py` places `type` and `region` in `BasicProperties.headers`. The routing key is intentionally set to `ignored.by.headers.exchange`.
+- `demos/headers/consumer.py` builds the binding arguments as `{"x-match": "all", ...}`. Therefore all configured headers must match.
+- Compose injects different `BINDING_HEADERS` JSON values for `eu-order-handler` and `payment-handler`.
+
+Changing `x-match` from `all` to `any` would change the semantics: one matching header would be sufficient. The current lab uses `all` to keep the routing rule deterministic.
+
+---
+
+# 5. Point-to-point processing with a Work Queue
 
 ## Terminal 1 — start two workers
 
@@ -300,7 +491,7 @@ A queue has an ordered sequence of messages, but with multiple workers the **com
 
 ---
 
-# 3. Publish/Subscribe with a Fanout Exchange
+# 6. Publish/Subscribe with a Fanout Exchange
 
 ## Terminal 1 — start subscribers
 
@@ -341,150 +532,6 @@ Because the queues are durable, you can stop consumers, publish again, inspect t
 - Each consumer declares **its own queue** and binds it to the same exchange. That queue-per-subscriber detail is what turns the topology into publish/subscribe.
 
 Notice that the publisher does not know how many subscribers exist. Adding another subscriber means adding another queue/binding; the publisher does not change.
-
----
-
-# 4. Direct Exchange: exact routing keys
-
-## Terminal 1 — start consumers
-
-```bash
-make -f Makefile.services direct
-make -f Makefile.services direct-logs
-```
-
-Bindings:
-
-```text
-                         orders.direct
-                              |
-              +---------------+----------------+
-              |                                |
-       order.created                     order.failed
-              |                                |
-              +-----------> audit-service <----+
-                                               |
-                                               +--> failure-monitor
-```
-
-## Terminal 2 — publish events
-
-```bash
-make -f Makefile.publishers direct
-```
-
-The publisher sends one `order.created` event and one `order.failed` event.
-
-A **direct exchange** performs exact matching between the message routing key and queue binding keys.
-
-Inspect the bindings:
-
-```bash
-make -f Makefile.services bindings
-```
-
-### Source code to inspect
-
-- `demos/direct/publisher.py` chooses the routing key (`order.created` or `order.failed`) and passes it to `basic_publish()`.
-- `demos/direct/consumer.py` reads `BINDING_KEYS` from the environment and creates one binding for each key.
-- `audit-service` is bound to both keys, while `failure-monitor` is bound only to `order.failed`. Both containers execute the **same Python consumer module** with different configuration.
-
-This is useful to distinguish the **message routing key** carried at publish time from the **binding keys** configured on queues.
-
----
-
-# 5. Topic Exchange: wildcard routing
-
-## Terminal 1 — start consumers
-
-```bash
-make -f Makefile.services topic
-make -f Makefile.services topic-logs
-```
-
-Consumers bind with:
-
-```text
-order-history     -> order.*
-onboarding-flow   -> order.created
-```
-
-## Terminal 2 — publish events
-
-```bash
-make -f Makefile.publishers topic
-```
-
-The publisher sends:
-
-```text
-order.created
-order.updated
-order.failed
-```
-
-Expected routing:
-
-```text
-order.created  -> both consumers
-order.updated  -> order-history only
-order.failed   -> order-history only
-```
-
-With a topic exchange:
-
-- `*` matches exactly one routing-key word;
-- `#` matches zero or more words.
-
-### Source code to inspect
-
-- `demos/topic/publisher.py` publishes the same message shape with different routing keys.
-- `demos/topic/consumer.py` has a single `BINDING_KEY`, provided by Compose.
-- `order-history` uses `order.*`; `onboarding-flow` uses the exact pattern `order.created`.
-
-The exchange performs pattern matching; consumers do not receive every message and then filter in Python. Non-matching messages are never routed to their queues.
-
----
-
-# 6. Headers Exchange: route using metadata
-
-## Terminal 1 — start consumers
-
-```bash
-make -f Makefile.services headers
-make -f Makefile.services headers-logs
-```
-
-Consumers are configured as:
-
-```text
-eu-order-handler  -> type=order AND region=eu
-payment-handler   -> type=payment
-```
-
-## Terminal 2 — publish messages
-
-```bash
-make -f Makefile.publishers headers
-```
-
-The publisher sends:
-
-```text
-{type=order,   region=eu}
-{type=order,   region=us}
-{type=payment, region=eu}
-```
-
-Unlike direct and topic exchanges, a **headers exchange** ignores the routing key and evaluates AMQP header values.
-
-### Source code to inspect
-
-- `demos/headers/publisher.py` places `type` and `region` in `BasicProperties.headers`. The routing key is intentionally set to `ignored.by.headers.exchange`.
-- `demos/headers/consumer.py` builds the binding arguments as `{"x-match": "all", ...}`. Therefore all configured headers must match.
-- Compose injects different `BINDING_HEADERS` JSON values for `eu-order-handler` and `payment-handler`.
-
-Changing `x-match` from `all` to `any` would change the semantics: one matching header would be sufficient. The current lab uses `all` to keep the routing rule deterministic.
 
 ---
 
@@ -761,7 +808,86 @@ The Python examples do **not** generate code from this file and do not validate 
 
 ---
 
-## Start all long-running consumers at once
+# 12. AMQP 1.0 on RabbitMQ with Apache Qpid Proton (Python)
+
+This is the **final hands-on example**. It shows how RabbitMQ 4.x supports **both AMQP 0-9-1 and AMQP 1.0** on the same broker (port **5672**), despite the protocols being **not wire-compatible**. All previous hands-on chapters used **Pika/AMQP 0-9-1**. Here the sender and receiver use **Apache Qpid Proton / AMQP 1.0**.
+
+## Topology and protocol boundary
+
+```text
+Pika / AMQP 0-9-1              RabbitMQ 4.x                 Proton / AMQP 1.0
+(setup only)              (one broker, port 5672)           (send + receive)
+     |                            |                                |
+     +---- queue_declare() ------>+ orders.amqp10                   |
+                                  |                                |
+Proton AMQP 1.0 publisher ------>+ /queues/orders.amqp10 -------->+ Proton consumer
+                                  |                                +-- receiver.accept()
+Optional Pika 0-9-1 publisher -->+ (cross-protocol conversion) -->+ same Proton consumer
+```
+
+**Important:** `/queues/orders.amqp10` is the **RabbitMQ AMQP 1.0 v2 address format**, not a universal AMQP 1.0 address. The queue must exist **before** Proton creates sender/receiver links. In this example it is declared with Pika, demonstrating the difference between RabbitMQ's queue topology and the AMQP 1.0 transfer protocol. For production AMQP 1.0 applications, use an appropriate topology management tool or supported client management API instead of coupling setup to Pika.
+
+## Terminal 1 — start the service side
+
+```bash
+make -f Makefile.services amqp10
+make -f Makefile.services amqp10-logs
+```
+
+The first command does four things in order:
+
+1. Starts the existing RabbitMQ 4.x broker.
+2. Builds the original Pika `lab` container.
+3. Runs `demos/amqp10/setup.py` (Pika/AMQP 0-9-1) to declare durable queue `orders.amqp10`.
+4. Builds/starts the **separate Proton consumer** using `Dockerfile.amqp10`.
+
+The Proton image builds the upstream `python-qpid-proton==0.40.0` source distribution. **Its first Docker build can take longer** than the existing Pika image because it compiles native dependencies.
+
+## Terminal 2 — publish via AMQP 1.0
+
+```bash
+make -f Makefile.publishers amqp10
+```
+
+This runs `demos/amqp10/publisher.py` using **Qpid Proton**, sending three JSON order events through `sender.send()` to `/queues/orders.amqp10`. The receiver in Terminal 1 uses `receiver.receive()` and, after processing, explicitly calls `receiver.accept()`, which settles the delivery.
+
+**Observe:** the sender's successful settlement indicates that the **broker accepted the transfer**, not that the application consumer completed processing. The **receiver's `accept()`** is a separate outcome.
+
+## Optional — prove cross-protocol interoperability
+
+With the same Proton consumer running, publish another event using **Pika/AMQP 0-9-1**:
+
+```bash
+make -f Makefile.publishers amqp10-pika
+```
+
+The same Proton AMQP 1.0 consumer prints a message with `"source": "pika-amqp-0-9-1"`. RabbitMQ bridges messages between clients using different protocols; the clients are **not connecting directly to each other**, and AMQP 0-9-1 and 1.0 are **not wire-compatible**.
+
+### Source code to inspect
+
+| File | What students should notice |
+|---|---|
+| `demos/amqp10/setup.py` | Predeclares the durable RabbitMQ queue with Pika/AMQP 0-9-1. |
+| `demos/amqp10/settings.py` | Proton connection, SASL credentials, and RabbitMQ-specific `/queues/...` v2 address. |
+| `demos/amqp10/publisher.py` | `proton.Message`, `create_sender()`, and synchronous broker settlement via `send()`. |
+| `demos/amqp10/consumer.py` | `create_receiver(credit=1)`, `receive()`, explicit `accept()`/`reject()` outcomes. |
+| `demos/amqp10/pika_publisher.py` | Optional cross-protocol producer using Pika and the default exchange. |
+| `Dockerfile.amqp10` | Builds the Proton Python client in a separate Docker image. |
+
+**Security note:** this demonstration intentionally uses username/password SASL PLAIN on the isolated Docker network, without TLS. Real deployments should use TLS (`amqps`), appropriate credentials, and least-privilege access.
+
+Stop the Proton consumer independently when finished:
+
+```bash
+make -f Makefile.services amqp10-stop
+```
+
+---
+
+
+---
+
+## Appendix A — Start all AMQP 0-9-1 consumers at once
 
 For a final walkthrough you can start RabbitMQ and all long-running consumer scenarios together:
 
@@ -782,31 +908,32 @@ make -f Makefile.publishers duplicate
 make -f Makefile.publishers ordering
 ```
 
-The redelivery scenario remains separate because it intentionally requires a consumer crash and restart.
+The redelivery scenario remains separate because it intentionally requires a consumer crash and restart. The AMQP 1.0 Proton consumer is also a separate target (`make -f Makefile.services amqp10`).
 
 ---
 
-## Source map for a classroom walkthrough
+## Appendix B — Source map for a classroom walkthrough
 
 If you want to open only a few files while presenting the lab, use this sequence:
 
 | Concept | Publisher / client | Consumer / service | Key line of reasoning |
 |---|---|---|---|
-| Work Queue | `demos/work_queue/publisher.py` | `demos/work_queue/worker.py` | same queue + competing consumers + ACK + prefetch |
-| Fanout | `demos/fanout/publisher.py` | `demos/fanout/consumer.py` | one exchange, one queue per subscriber |
 | Direct | `demos/direct/publisher.py` | `demos/direct/consumer.py` | exact routing-key / binding-key match |
 | Topic | `demos/topic/publisher.py` | `demos/topic/consumer.py` | wildcard binding patterns |
 | Headers | `demos/headers/publisher.py` | `demos/headers/consumer.py` | metadata-based routing with `x-match` |
+| Work Queue | `demos/work_queue/publisher.py` | `demos/work_queue/worker.py` | same queue + competing consumers + ACK + prefetch |
+| Fanout | `demos/fanout/publisher.py` | `demos/fanout/consumer.py` | one exchange, one queue per subscriber |
 | Request/Reply | `demos/request_reply/client.py` | `demos/request_reply/server.py` | `reply_to` + `correlation_id` |
 | Redelivery | `demos/reliability/redelivery_publisher.py` | `demos/reliability/redelivery_consumer.py` | crash before ACK -> broker redelivery |
 | Idempotency | `demos/reliability/duplicate_publisher.py` | `demos/reliability/idempotent_consumer.py` | repeated `message_id` -> skip duplicate effect |
 | Ordering | `demos/ordering/publisher.py` | `demos/ordering/consumer.py` | route the same key to the same processing path |
+| AMQP 1.0 | `demos/amqp10/publisher.py` | `demos/amqp10/consumer.py` | Proton sender/receiver links, transfer settlement; optional Pika interop |
 
 A useful teaching rule is to read **the topology first** (exchange, queue, binding), then the call to `basic_publish()`, and finally the consumer callback and its ACK behavior.
 
 ---
 
-## RabbitMQ concepts mapped to this lab
+## Appendix C — RabbitMQ concepts mapped to this lab
 
 | Concept | In this lab |
 |---|---|
@@ -823,7 +950,7 @@ A useful teaching rule is to read **the topology first** (exchange, queue, bindi
 
 ---
 
-## Why the examples use JSON
+## Appendix D — Why the examples use JSON
 
 AMQP transports bytes. RabbitMQ does not require JSON: the body could contain JSON, Protobuf, Avro, text, or another binary format.
 
@@ -841,7 +968,7 @@ custom headers
 
 ---
 
-## Broker-based messaging and availability
+## Appendix E — Broker-based messaging and availability
 
 Asynchronous broker-based communication reduces direct temporal coupling:
 
@@ -860,7 +987,7 @@ This does not make failures disappear. RabbitMQ becomes infrastructure that must
 
 ---
 
-## Useful classroom sequence
+## Appendix F — Useful classroom sequence
 
 ```text
 Terminal 1: start consumers       Terminal 2: publish
@@ -868,16 +995,16 @@ Terminal 1: start consumers       Terminal 2: publish
           +------------ observe ------------+
                         |
                         v
+Direct / Topic / Headers
+exchange routing policies
+        |
+        v
 Work Queue
 point-to-point + ACK + prefetch
         |
         v
 Fanout
 publish/subscribe
-        |
-        v
-Direct / Topic / Headers
-routing policies
         |
         v
 Request/Reply
@@ -898,11 +1025,19 @@ partitioned processing
         v
 AsyncAPI
 message contract
+        |
+        v
+AMQP 1.0 (Proton)
+same broker, new wire protocol
+        |
+        v
+Pika -> Proton (optional)
+cross-protocol interoperability
 ```
 
 ---
 
-## Stop and clean up
+## Appendix G — Stop and clean up
 
 Stop the complete lab while keeping persisted RabbitMQ and SQLite volumes:
 

@@ -173,6 +173,25 @@ services:
       <<: *rabbit-env
       ORDER_KEY: B
 
+  # AMQP 1.0: same RabbitMQ 4.x broker, different client and protocol.
+  # Queue creation is performed first by demos.amqp10.setup (Pika 0-9-1).
+  amqp10-consumer:
+    image: async-rabbitmq-proton:local
+    build:
+      context: .
+      dockerfile: Dockerfile.amqp10
+    profiles: ["amqp10"]
+    command: ["python", "-m", "demos.amqp10.consumer"]
+    restart: unless-stopped
+    environment:
+      <<: *rabbit-env
+      AMQP10_QUEUE: orders.amqp10
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - messaging
+
 networks:
   messaging:
 
