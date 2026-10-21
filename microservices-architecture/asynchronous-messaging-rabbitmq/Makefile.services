@@ -100,15 +100,17 @@ direct-stop:
 	$(COMPOSE) stop direct-all direct-failures
 
 topic:
-	$(COMPOSE) --profile topic up -d --build rabbitmq topic-all topic-created
+	$(COMPOSE) --profile topic up -d --build rabbitmq topic-all topic-created topic-any-depth topic-any-created
 	$(call wait_for_queue,orders.all.events)
 	$(call wait_for_queue,orders.created.events)
+	$(call wait_for_queue,orders.any.depth)
+	$(call wait_for_queue,events.any.created)
 
 topic-logs:
-	$(COMPOSE) logs -f topic-all topic-created
+	$(COMPOSE) logs -f topic-all topic-created topic-any-depth topic-any-created
 
 topic-stop:
-	$(COMPOSE) stop topic-all topic-created
+	$(COMPOSE) stop topic-all topic-created topic-any-depth topic-any-created
 
 headers:
 	$(COMPOSE) --profile headers up -d --build rabbitmq headers-eu-orders headers-payments
@@ -193,6 +195,8 @@ all:
 	$(call wait_for_queue,orders.failures)
 	$(call wait_for_queue,orders.all.events)
 	$(call wait_for_queue,orders.created.events)
+	$(call wait_for_queue,orders.any.depth)
+	$(call wait_for_queue,events.any.created)
 	$(call wait_for_queue,eu.orders)
 	$(call wait_for_queue,payment.commands)
 	$(call wait_for_queue,pricing.rpc)

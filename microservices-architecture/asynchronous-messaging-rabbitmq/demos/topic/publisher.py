@@ -9,7 +9,7 @@ EXCHANGE = "orders.topic"
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("routing_key", choices=["order.created", "order.updated", "order.failed"])
+    parser.add_argument("routing_key", help="Routing key, e.g. order.created or order.eu.created")
     parser.add_argument("--order-id", default="order-123")
     args = parser.parse_args()
 

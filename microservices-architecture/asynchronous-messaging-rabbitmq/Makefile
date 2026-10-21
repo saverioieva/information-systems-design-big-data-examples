@@ -72,17 +72,17 @@ direct-stop:
 
 # Topic exchange: order-history binds order.*; onboarding-flow binds order.created.
 topic-up:
-	$(COMPOSE) --profile topic up -d --build rabbitmq topic-all topic-created
+	$(COMPOSE) --profile topic up -d --build rabbitmq topic-all topic-created topic-any-depth topic-any-created
 
 topic-demo: topic-up
 	$(LAB) python -m demos.topic.publisher order.created --order-id order-301
 	$(LAB) python -m demos.topic.publisher order.updated --order-id order-301
 	$(LAB) python -m demos.topic.publisher order.failed --order-id order-302
 	@sleep 1
-	$(COMPOSE) logs --tail=50 topic-all topic-created
+	$(COMPOSE) logs --tail=70 topic-all topic-created topic-any-depth topic-any-created
 
 topic-stop:
-	$(COMPOSE) stop topic-all topic-created
+	$(COMPOSE) stop topic-all topic-created topic-any-depth topic-any-created
 
 # Headers exchange: eu-order-handler requires region=eu AND type=order.
 # payment-handler requires type=payment; extra message headers are allowed.

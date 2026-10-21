@@ -34,7 +34,7 @@ The practical steps follow the sequence **messaging and broker → AMQP versions
 |---|---|
 | Why use a broker? | Section 1, RabbitMQ UI, queue/broker inspection |
 | AMQP evolution and protocol choice | Concept notes below; final Proton exercise in Section 12 |
-| RabbitMQ message flow; direct/topic/headers exchanges | Sections 2–4 (fanout appears in the pub/sub exercise) |
+| RabbitMQ message flow; direct/topic/headers exchanges | Sections 2–4 (Section 3 includes an interactive `*` vs `#` topic-matching matrix; fanout appears in the pub/sub exercise) |
 | Point-to-point and work queues | Section 5 |
 | Publish/subscribe | Section 6, fanout |
 | Request/reply | Section 7 |
@@ -335,29 +335,57 @@ This is useful to distinguish the **message routing key** carried at publish tim
 
 ---
 
-# 3. Topic Exchange: wildcard routing
+# 3. Topic Exchange: wildcard routing (hands-on matching exercises)
 
-## Terminal 1 — start consumers
+This exercise uses the **existing `demos/topic/` publisher and consumer** with a RabbitMQ **topic exchange** named `orders.topic`. The same consumer code is started multiple times with different queue names and binding patterns. No filtering is performed inside the Python callback: **RabbitMQ routes a copy of a message only to queues whose binding pattern matches the published routing key**.
+
+## 3.1 How topic matching works
+
+A publisher specifies a **routing key** made of words separated by dots, such as `order.eu.created`. A queue is bound to the topic exchange using a **binding key/pattern**:
+
+| Binding pattern | Meaning | Examples that match | Examples that do not match |
+|---|---|---|---|
+| `order.created` | Exact key: no wildcard | `order.created` | `order.updated`, `order.eu.created` |
+| `order.*` | `*` = **exactly one word** | `order.created`, `order.failed` | `order`, `order.eu.created` |
+| `order.#` | `#` = **zero or more words** | `order`, `order.created`, `order.eu.created` | `payment.created` |
+| `*.created` | Any **one-word prefix**, then `.created` | `order.created`, `payment.created` | `created`, `order.eu.created` |
+
+**Important:** `*` and `#` are wildcards **in a binding pattern**, not in the publisher's routing key. Each consumer subscribes to its own queue; when more than one queue matches, **each receives a copy** of the event. A topic exchange is *not* the same thing as a Kafka topic.
+
+## 3.2 Start four independent subscribers (Terminal 1)
 
 ```bash
 make -f Makefile.services topic
 make -f Makefile.services topic-logs
 ```
 
-Consumers bind with:
+The first command starts RabbitMQ and the four consumers, and waits for the four queues to exist. The second follows their logs. Do not close the log terminal while publishing from another terminal.
+
+The topic topology is:
 
 ```text
-order-history     -> order.*
-onboarding-flow   -> order.created
+                              orders.topic (type=topic)
+                                       |
+                        routing key on each event
+                                       |
+                 +---------------------+----------------------+-------------------+
+                 |                     |                      |                   |
+             order.*             order.created           order.#           *.created
+                 |                     |                      |                   |
+        orders.all.events    orders.created.events    orders.any.depth  events.any.created
+                 |                     |                      |                   |
+           order-history        onboarding-flow         order-archive     creation-monitor
 ```
 
-## Terminal 2 — publish events
+Each queue is independently declared **durable** in `demos/topic/consumer.py`. The binding patterns are injected from `docker-compose.yml` via `BINDING_KEY`.
+
+## 3.3 Start with the original three events (Terminal 2)
 
 ```bash
 make -f Makefile.publishers topic
 ```
 
-The publisher sends:
+This unchanged convenience target publishes:
 
 ```text
 order.created
@@ -365,26 +393,114 @@ order.updated
 order.failed
 ```
 
-Expected routing:
+Read the logs in Terminal 1. In particular, `order.created` appears in **four** consumers, because all four patterns match; `order.updated` and `order.failed` appear in only **two**.
 
-```text
-order.created  -> both consumers
-order.updated  -> order-history only
-order.failed   -> order-history only
+## 3.4 Predict the outcome before publishing
+
+Use this matrix as an exercise: cover the checkmarks, predict the recipients, publish, then inspect the logs.
+
+| Published routing key | `order.*` (history) | `order.created` (onboarding) | `order.#` (archive) | `*.created` (creation) |
+|---|:---:|:---:|:---:|:---:|
+| `order.created` | ✅ | ✅ | ✅ | ✅ |
+| `order.updated` | ✅ | — | ✅ | — |
+| `order.failed` | ✅ | — | ✅ | — |
+| `order.eu.created` | — | — | ✅ | — |
+| `order` | — | — | ✅ | — |
+| `payment.created` | — | — | — | ✅ |
+| `system.heartbeat` | — | — | — | — |
+
+This table is about **routing to queues**, not delivery order or how fast consumers process messages. It assumes these are the only relevant bindings on `orders.topic`.
+
+## 3.5 Try one routing key at a time
+
+The original publisher now accepts **arbitrary routing keys** (not only the three default keys), so the following commands use the same `demos/topic/publisher.py` module.
+
+**Case A — exact match + both wildcards**
+
+```bash
+make -f Makefile.publishers topic-key KEY=order.created ORDER_ID=order-320
 ```
 
-With a topic exchange:
+Expected: `order-history`, `onboarding-flow`, `order-archive`, **and** `creation-monitor`. One publication, four queues.
 
-- `*` matches exactly one routing-key word;
-- `#` matches zero or more words.
+**Case B — `*` matches exactly one word**
 
-### Source code to inspect
+```bash
+make -f Makefile.publishers topic-key KEY=order.failed ORDER_ID=order-321
+```
 
-- `demos/topic/publisher.py` publishes the same message shape with different routing keys.
-- `demos/topic/consumer.py` has a single `BINDING_KEY`, provided by Compose.
-- `order-history` uses `order.*`; `onboarding-flow` uses the exact pattern `order.created`.
+Expected: `order-history` and `order-archive`. The exact `order.created` binding does not match, nor does `*.created`.
 
-The exchange performs pattern matching; consumers do not receive every message and then filter in Python. Non-matching messages are never routed to their queues.
+**Case C — `*` does not match multiple words**
+
+```bash
+make -f Makefile.publishers topic-key KEY=order.eu.created ORDER_ID=order-322
+```
+
+Expected: **only `order-archive`**. The key contains three words. `order.*` expects exactly two, while `order.#` accepts any number of words after `order`.
+
+**Case D — `#` also matches zero words**
+
+```bash
+make -f Makefile.publishers topic-key KEY=order ORDER_ID=order-323
+```
+
+Expected: **only `order-archive`**. This demonstrates the subtle rule that `order.#` includes `order` itself.
+
+**Case E — wildcard in the first position**
+
+```bash
+make -f Makefile.publishers topic-key KEY=payment.created ORDER_ID=order-324
+```
+
+Expected: **only `creation-monitor`**, because `*.created` matches two-word routing keys ending in `.created`, regardless of the first word.
+
+**Case F — no matching binding**
+
+```bash
+make -f Makefile.publishers topic-key KEY=system.heartbeat ORDER_ID=order-325
+```
+
+Expected: **no consumer log entry**. No queue matches this key. In this demo the publisher does not use `mandatory=True` or an alternate exchange, so an unroutable publication may be silently dropped by RabbitMQ. The publisher's `published ...` message **does not prove a consumer received it**.
+
+Alternatively, run a single deterministic seven-message walkthrough:
+
+```bash
+make -f Makefile.publishers topic-cases
+```
+
+To repeat any case, change `KEY` and/or `ORDER_ID` in the `topic-key` command. **Quotes** are recommended if a key contains characters interpreted by your shell.
+
+## 3.6 Inspect the routing configuration in RabbitMQ
+
+While the consumers are running, inspect the declared entities:
+
+```bash
+make -f Makefile.services exchanges
+make -f Makefile.services queues
+make -f Makefile.services bindings
+```
+
+Or open the **Management UI** at <http://localhost:15672> (user `student`, password `student`):
+
+1. Under **Exchanges**, open `orders.topic` and confirm that its type is **topic**.
+2. Inspect the bindings to `orders.all.events`, `orders.created.events`, `orders.any.depth`, and `events.any.created`.
+3. Under **Queues and Streams**, verify that each queue has its **own consumer**.
+4. Publish another routing key and check the corresponding consumer logs.
+
+The UI shows which binding patterns RabbitMQ evaluates. The **exchange** performs the match; the consumer callback only handles messages that reach its queue.
+
+## 3.7 Read the source code
+
+| File | What to find |
+|---|---|
+| `demos/topic/publisher.py` | `exchange_declare(exchange="orders.topic", exchange_type="topic", durable=True)` and `basic_publish(... routing_key=args.routing_key)`; any key can now be supplied on the CLI. |
+| `demos/topic/consumer.py` | The consumer declares the queue and calls `queue_bind(... routing_key=BINDING_KEY)`, then acknowledges processed messages. |
+| `docker-compose.yml` | The four instances use **the same consumer code** but have different `QUEUE_NAME`, `CONSUMER_NAME`, and `BINDING_KEY` values. |
+| `Makefile.services` | Starts and follows the four consumers (`topic`, `topic-logs`, `topic-stop`). |
+| `Makefile.publishers` | Provides the original three-event demo (`topic`), a single custom key (`topic-key`), and all matching cases (`topic-cases`). |
+
+**Two cautions for repeated lab runs:** queues and bindings are durable, so stopping consumers does **not** remove their routing rules. Also, an event can remain in a durable queue while its consumer is stopped. For deterministic comparisons, keep consumers running and start from a fresh lab broker (or clean only the relevant demo topology). The project-wide `reset` target deletes RabbitMQ's persisted lab data, so use it **only when that data can be discarded**.
 
 ---
 
@@ -928,7 +1044,7 @@ If you want to open only a few files while presenting the lab, use this sequence
 | Concept | Publisher / client | Consumer / service | Key line of reasoning |
 |---|---|---|---|
 | Direct | `demos/direct/publisher.py` | `demos/direct/consumer.py` | exact routing-key / binding-key match |
-| Topic | `demos/topic/publisher.py` | `demos/topic/consumer.py` | wildcard binding patterns |
+| Topic | `demos/topic/publisher.py` | `demos/topic/consumer.py` | runnable `*` / `#` matching exercises; `topic-key` and `topic-cases` |
 | Headers | `demos/headers/publisher.py` | `demos/headers/consumer.py` | metadata-based routing with `x-match` |
 | Work Queue | `demos/work_queue/publisher.py` | `demos/work_queue/worker.py` | same queue + competing consumers + ACK + prefetch |
 | Fanout | `demos/fanout/publisher.py` | `demos/fanout/consumer.py` | one exchange, one queue per subscriber |

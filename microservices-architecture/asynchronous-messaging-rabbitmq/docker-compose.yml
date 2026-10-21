@@ -116,6 +116,26 @@ services:
       CONSUMER_NAME: onboarding-flow
       BINDING_KEY: order.created
 
+  topic-any-depth:
+    <<: *lab-service
+    profiles: ["topic"]
+    command: ["python", "-m", "demos.topic.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: orders.any.depth
+      CONSUMER_NAME: order-archive
+      BINDING_KEY: "order.#"
+
+  topic-any-created:
+    <<: *lab-service
+    profiles: ["topic"]
+    command: ["python", "-m", "demos.topic.consumer"]
+    environment:
+      <<: *rabbit-env
+      QUEUE_NAME: events.any.created
+      CONSUMER_NAME: creation-monitor
+      BINDING_KEY: "*.created"
+
   headers-eu-orders:
     <<: *lab-service
     profiles: ["headers"]

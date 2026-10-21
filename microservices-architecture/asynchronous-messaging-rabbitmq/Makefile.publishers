@@ -1,8 +1,9 @@
 COMPOSE=docker compose
 LAB=$(COMPOSE) --profile tools run --rm --no-deps lab
+ORDER_ID ?= order-310
 PROTON=$(COMPOSE) --profile amqp10 run --rm --no-deps amqp10-consumer
 
-.PHONY: amqp10 amqp10-pika help check-broker work fanout direct topic headers rpc duplicate redelivery ordering
+.PHONY: amqp10 amqp10-pika help check-broker work fanout direct topic topic-key topic-cases headers rpc duplicate redelivery ordering
 
 help:
 	@echo "One-shot publishers/clients"
@@ -12,6 +13,8 @@ help:
 	@echo "  make -f Makefile.publishers fanout"
 	@echo "  make -f Makefile.publishers direct"
 	@echo "  make -f Makefile.publishers topic"
+	@echo "  make -f Makefile.publishers topic-key KEY=order.eu.created"
+	@echo "  make -f Makefile.publishers topic-cases  # full wildcard exercise"
 	@echo "  make -f Makefile.publishers headers"
 	@echo "  make -f Makefile.publishers rpc"
 	@echo "  make -f Makefile.publishers duplicate"
@@ -39,6 +42,22 @@ topic: check-broker
 	$(LAB) python -m demos.topic.publisher order.created --order-id order-301
 	$(LAB) python -m demos.topic.publisher order.updated --order-id order-301
 	$(LAB) python -m demos.topic.publisher order.failed --order-id order-302
+
+# Send any routing key to the existing orders.topic exchange.
+# This makes # (zero-or-more words) and * (exactly one word) observable.
+topic-key: check-broker
+	@test -n "$(KEY)" || (echo "Missing KEY: use make -f Makefile.publishers topic-key KEY=order.eu.created"; exit 1)
+	$(LAB) python -m demos.topic.publisher "$(KEY)" --order-id "$(ORDER_ID)"
+
+# All teaching cases in a predictable order (one message per command).
+topic-cases: check-broker
+	$(LAB) python -m demos.topic.publisher order.created --order-id order-310
+	$(LAB) python -m demos.topic.publisher order.updated --order-id order-311
+	$(LAB) python -m demos.topic.publisher order.failed --order-id order-312
+	$(LAB) python -m demos.topic.publisher order.eu.created --order-id order-313
+	$(LAB) python -m demos.topic.publisher order --order-id order-314
+	$(LAB) python -m demos.topic.publisher payment.created --order-id order-315
+	$(LAB) python -m demos.topic.publisher system.heartbeat --order-id order-316
 
 headers: check-broker
 	$(LAB) python -m demos.headers.publisher --type order --region eu
