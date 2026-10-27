@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ftgo
+      POSTGRES_USER: ftgo
+      POSTGRES_PASSWORD: ftgo
+    volumes:
+    - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U ftgo -d ftgo
+      interval: 3s
+      retries: 30
+  adminer:
+    image: adminer
+    depends_on:
+    - db
+    ports:
+    - 8083:8080
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: ftgo
+      DB_USER: ftgo
+      DB_PASSWORD: ftgo
+    ports:
+    - 8003:8000
+name: lab-ddd-aggregates
+volumes:
+  pg_data: null

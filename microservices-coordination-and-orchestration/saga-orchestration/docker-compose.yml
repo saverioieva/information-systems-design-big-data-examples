@@ -1,0 +1,67 @@
+name: lab-saga-orchestration
+x-base: &base
+  build: .
+  environment: &env
+    AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
+  depends_on:
+    setup:
+      condition: service_completed_successfully
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports: ["15673:15672"]
+    environment:
+      RABBITMQ_DEFAULT_USER: student
+      RABBITMQ_DEFAULT_PASS: student
+    healthcheck:
+      test: ["CMD","rabbitmq-diagnostics","-q","ping"]
+      interval: 5s
+      retries: 30
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+  setup:
+    build: .
+    command: python -m app.topology
+    environment: *env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  orchestrator:
+    <<: *base
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports: ["8001:8000"]
+    environment:
+      <<: *env
+      ROLE: orchestrator
+      DB_FILE: /data/orchestrator.db
+    volumes: ["orchestrator_data:/data"]
+  consumer:
+    <<: *base
+    command: python -m app.main
+    environment:
+      <<: *env
+      ROLE: consumer
+      DB_FILE: /data/consumer.db
+    volumes: ["consumer_data:/data"]
+  kitchen:
+    <<: *base
+    command: python -m app.main
+    environment:
+      <<: *env
+      ROLE: kitchen
+      DB_FILE: /data/kitchen.db
+    volumes: ["kitchen_data:/data"]
+  accounting:
+    <<: *base
+    command: python -m app.main
+    environment:
+      <<: *env
+      ROLE: accounting
+      DB_FILE: /data/accounting.db
+    volumes: ["accounting_data:/data"]
+volumes:
+  rabbitmq_data:
+  orchestrator_data:
+  consumer_data:
+  kitchen_data:
+  accounting_data:

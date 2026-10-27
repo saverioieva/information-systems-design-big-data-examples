@@ -1,0 +1,208 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+    - 15674:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: student
+      RABBITMQ_DEFAULT_PASS: student
+    healthcheck:
+      test:
+      - CMD
+      - rabbitmq-diagnostics
+      - check_running
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+  postgres_order:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: orderdb
+    volumes:
+    - pg_order_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U app -d orderdb
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+  postgres_consumer:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: consumerdb
+    volumes:
+    - pg_consumer_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U app -d consumerdb
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+  postgres_kitchen:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: kitchendb
+    volumes:
+    - pg_kitchen_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U app -d kitchendb
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+  postgres_accounting:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: accountingdb
+    volumes:
+    - pg_accounting_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U app -d accountingdb
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+  order_service:
+    build:
+      context: .
+      dockerfile: order_service/Dockerfile
+    environment:
+      SERVICE_NAME: order_service
+      AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
+      DATABASE_URL: postgresql+psycopg2://app:pass@postgres_order:5432/orderdb
+      EXCHANGE: saga
+      PORT: '8000'
+      LOG_LEVEL: INFO
+      AMQP_HEARTBEAT: '120'
+      AMQP_BLOCKED_TIMEOUT: '300'
+      AMQP_SOCKET_TIMEOUT: '180'
+      AMQP_MAX_RETRIES: '0'
+      AMQP_RETRY_BASE_SEC: '0.5'
+      AMQP_RETRY_MAX_SEC: '10'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres_order:
+        condition: service_healthy
+      topology:
+        condition: service_completed_successfully
+    ports:
+    - 8002:8000
+    restart: unless-stopped
+  consumer_service:
+    build:
+      context: .
+      dockerfile: consumer_service/Dockerfile
+    environment:
+      SERVICE_NAME: consumer_service
+      LOG_LEVEL: INFO
+      AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
+      DATABASE_URL: postgresql+psycopg2://app:pass@postgres_consumer:5432/consumerdb
+      EXCHANGE: saga
+      AMQP_HEARTBEAT: '120'
+      AMQP_BLOCKED_TIMEOUT: '300'
+      AMQP_SOCKET_TIMEOUT: '180'
+      AMQP_MAX_RETRIES: '0'
+      AMQP_RETRY_BASE_SEC: '0.5'
+      AMQP_RETRY_MAX_SEC: '10'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres_consumer:
+        condition: service_healthy
+      topology:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  kitchen_service:
+    build:
+      context: .
+      dockerfile: kitchen_service/Dockerfile
+    environment:
+      SERVICE_NAME: kitchen_service
+      LOG_LEVEL: INFO
+      AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
+      DATABASE_URL: postgresql+psycopg2://app:pass@postgres_kitchen:5432/kitchendb
+      EXCHANGE: saga
+      AMQP_HEARTBEAT: '120'
+      AMQP_BLOCKED_TIMEOUT: '300'
+      AMQP_SOCKET_TIMEOUT: '180'
+      AMQP_MAX_RETRIES: '0'
+      AMQP_RETRY_BASE_SEC: '0.5'
+      AMQP_RETRY_MAX_SEC: '10'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres_kitchen:
+        condition: service_healthy
+      topology:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  accounting_service:
+    build:
+      context: .
+      dockerfile: accounting_service/Dockerfile
+    environment:
+      SERVICE_NAME: accounting_service
+      LOG_LEVEL: INFO
+      AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
+      DATABASE_URL: postgresql+psycopg2://app:pass@postgres_accounting:5432/accountingdb
+      EXCHANGE: saga
+      AUTHORIZE_OK: 'true'
+      AMQP_HEARTBEAT: '120'
+      AMQP_BLOCKED_TIMEOUT: '300'
+      AMQP_SOCKET_TIMEOUT: '180'
+      AMQP_MAX_RETRIES: '0'
+      AMQP_RETRY_BASE_SEC: '0.5'
+      AMQP_RETRY_MAX_SEC: '10'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres_accounting:
+        condition: service_healthy
+      topology:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  adminer:
+    image: adminer:4
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres_order
+    ports:
+    - 8082:8080
+    depends_on:
+    - postgres_order
+    - postgres_consumer
+    - postgres_kitchen
+    - postgres_accounting
+    restart: unless-stopped
+  topology:
+    build:
+      context: .
+      dockerfile: Dockerfile.setup
+    environment:
+      AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+volumes:
+  pg_order_data: null
+  pg_consumer_data: null
+  pg_kitchen_data: null
+  pg_accounting_data: null
+name: lab-saga-choreography

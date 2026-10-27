@@ -15,6 +15,7 @@ set of architectural concepts and includes instructions for local experimentatio
 | [`cloud-native-examples/`](cloud-native-examples/) | Docker fundamentals, Twelve-Factor principles, deployment strategies, service models, and monitoring |
 | [`cloud-native-principles-examples/`](cloud-native-principles-examples/) | API-first, consumer-first design, persistence, failure isolation, single-concern containers, high observability, container constraints, cohesion/coupling levels, and SOLID principles |
 | [`microservices-architecture/`](microservices-architecture/) | Microservice decomposition and service-boundary design; DDD; API evolution and versioning; synchronous REST RPI; Hexagonal Architecture; FastAPI/PostgreSQL adapters; OpenAPI/Swagger tooling; gRPC, Protocol Buffers, code generation, and RPC interaction models |
+| [`microservices-coordination-and-orchestration/`](microservices-coordination-and-orchestration/) | Chapter 4: Hexagonal microservices with asynchronous request processing, Transactional Outbox (Python Polling Publisher and Python WAL Tailing → RabbitMQ), Saga choreography/orchestration and isolation, and DDD aggregates |
 
 Additional examples may be added as the course progresses.
 
@@ -33,6 +34,7 @@ Then open the course block you want to study:
 - [`cloud-native-examples/README.md`](cloud-native-examples/README.md)
 - [`cloud-native-principles-examples/README.md`](cloud-native-principles-examples/README.md)
 - [`microservices-architecture/README.md`](microservices-architecture/README.md)
+- [`microservices-coordination-and-orchestration/README.md`](microservices-coordination-and-orchestration/README.md)
 
 The block-level README files contain the recommended sequence, requirements,
 and commands for running their examples.

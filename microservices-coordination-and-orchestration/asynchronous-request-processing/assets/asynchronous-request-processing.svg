@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1060" viewBox="0 0 1000 1060">
+<defs>
+  <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e3f4ff"/><stop offset="1" stop-color="#cce8fa"/></linearGradient>
+  <linearGradient id="mint" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e8f9ef"/><stop offset="1" stop-color="#d5f1de"/></linearGradient>
+  <linearGradient id="warm" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff3dc"/><stop offset="1" stop-color="#ffe3bd"/></linearGradient>
+  <linearGradient id="purple" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f3efff"/><stop offset="1" stop-color="#e5dcff"/></linearGradient>
+  <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#102758"/></marker>
+  <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#14835b"/></marker>
+</defs>
+<style>
+ text{font-family:Arial,Helvetica,sans-serif;fill:#102758;text-anchor:middle}
+ .header{font-size:35px;font-weight:700}.body{font-size:24px}.mini{font-size:21px}.small{font-size:19px}
+ .box{stroke:#0e315c;stroke-width:3.7}.line{fill:none;stroke:#102758;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#arrowBlue)}
+ .return{fill:none;stroke:#14835b;stroke-width:5;stroke-dasharray:13 9;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#arrowGreen)}
+ .step{fill:#2f82d2;stroke:#fff;stroke-width:4}.steptxt{fill:white;font-size:24px;font-weight:700}
+</style>
+<rect width="1000" height="1060" fill="#ffffff"/>
+<!-- top actors -->
+<rect x="35" y="56" width="265" height="187" rx="24" fill="url(#blue)" class="box"/>
+<rect x="641" y="56" width="325" height="260" rx="24" fill="url(#blue)" class="box"/>
+<!-- client laptop icon -->
+<rect x="132" y="83" width="68" height="44" rx="6" fill="#f9fdff" stroke="#102758" stroke-width="6"/>
+<path d="M120 137 H212 L223 150 H108 Z" fill="#9fd2f4" stroke="#102758" stroke-width="6" stroke-linejoin="round"/>
+<text x="167" y="198" class="header">Client</text>
+<!-- service cart -->
+<g stroke="#102758" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" fill="none" transform="translate(778,77)"><path d="M0 0 h13 l12 53 h55 l14-38 h-70"/><circle cx="34" cy="68" r="6" fill="#f3bb54"/><circle cx="75" cy="68" r="6" fill="#f3bb54"/></g>
+<text x="803" y="193" class="header">Order Service</text>
+<rect x="680" y="219" width="250" height="59" rx="13" fill="#fff1d4" stroke="#dca74b" stroke-width="2"/>
+<text x="805" y="255" class="body" font-weight="700">Order: PENDING</text>
+<!-- request / response arrows -->
+<path d="M302 106 H630" class="line"/>
+<circle cx="460" cy="87" r="19" class="step"/><text x="460" y="95" class="steptxt">1</text>
+<text x="466" y="62" class="mini" font-weight="700">POST /orders</text>
+<path d="M630 195 H307" class="return"/>
+<text x="469" y="223" class="mini" fill="#14835b" font-weight="700">202 Accepted</text>
+<!-- broker -->
+<rect x="335" y="441" width="330" height="180" rx="28" fill="url(#purple)" stroke="#6652c8" stroke-width="4"/>
+<rect x="431" y="465" width="138" height="58" rx="11" fill="#ffffff" stroke="#6652c8" stroke-width="3"/>
+<path d="M447 479 l50 27 l50 -27 M447 479 H550 V510 H447 Z" fill="none" stroke="#6652c8" stroke-width="4" stroke-linejoin="round"/>
+<text x="500" y="560" class="header">RabbitMQ</text>
+<text x="500" y="591" class="small">validation queues</text>
+<!-- command from order to broker: through left rail -->
+<path d="M706 315 V376 H500 V437" class="line"/>
+<circle cx="708" cy="359" r="19" class="step"/><text x="708" y="367" class="steptxt">2</text>
+<text x="789" y="394" class="small">Send requests</text>
+<!-- answers broker to order service rail distinct -->
+<path d="M660 512 H906 V317" class="return"/>
+<text x="825" y="493" class="small" fill="#14835b">Receive results</text>
+<circle cx="912" cy="422" r="19" fill="#16845b" stroke="#fff" stroke-width="4"/><text x="912" y="430" class="steptxt">4</text>
+<!-- consumers -->
+<rect x="20" y="779" width="440" height="175" rx="24" fill="url(#mint)" class="box"/>
+<rect x="540" y="779" width="440" height="175" rx="24" fill="url(#warm)" class="box"/>
+<!-- people icon -->
+<circle cx="237" cy="814" r="17" fill="#b0ddef" stroke="#102758" stroke-width="4"/>
+<path d="M209 860 q2-34 28-34 q27 0 28 34" fill="#b0ddef" stroke="#102758" stroke-width="4"/>
+<text x="240" y="896" class="header">Consumer</text><text x="240" y="928" class="body">Service</text>
+<!-- restaurant icon -->
+<path d="M725 841 c-3-22 11-35 32-34 c12-21 46-14 48 8 c23-4 35 13 28 32 z" fill="#fff8e8" stroke="#102758" stroke-width="5"/>
+<path d="M739 844 V864 H818 V844" fill="#f5c677" stroke="#102758" stroke-width="4"/>
+<text x="759" y="896" class="header">Restaurant</text><text x="759" y="928" class="body">Service</text>
+<!-- requests down to each worker -->
+<path d="M420 621 V678 H242 V772" class="line"/>
+<path d="M581 621 V678 H757 V772" class="line"/>
+<text x="230" y="708" class="mini">ValidateConsumer</text>
+<text x="781" y="708" class="mini">ValidateOrderDetails</text>
+<!-- response up from workers to broker, drawn separate rails -->
+<path d="M445 780 V725 H358 V630" class="return"/>
+<path d="M555 780 V725 H645 V630" class="return"/>
+<circle cx="500" cy="720" r="20" class="step"/><text x="500" y="728" class="steptxt">3</text>
+<text x="498" y="758" class="small" fill="#14835b">Replies</text>
+<!-- status line bottom -->
+<rect x="118" y="987" width="765" height="49" rx="15" fill="#f2f0ff" stroke="#d2cbf1" stroke-width="2"/>
+<text x="500" y="1019" class="mini" font-weight="700">Both PASS → VALIDATED  |  Any FAIL → REJECTED</text>
+</svg>

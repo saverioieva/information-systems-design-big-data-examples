@@ -1,0 +1,3 @@
+from typing import Protocol
+class MessagePublisher(Protocol):
+    def publish(self, routing_key: str, message: dict, event_id: str) -> None: ...

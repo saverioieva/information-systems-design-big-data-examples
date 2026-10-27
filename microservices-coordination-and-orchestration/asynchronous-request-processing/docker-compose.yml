@@ -1,0 +1,67 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: student
+      RABBITMQ_DEFAULT_PASS: student
+    ports:
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  order-api:
+    build: .
+    command: ["python", "-m", "app.order_api"]
+    environment:
+      DB_PATH: /data/orders.sqlite
+      RABBITMQ_URL: amqp://student:student@rabbitmq:5672/%2F
+    ports:
+      - "5001:5001"
+    volumes:
+      - orders_data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  order-results:
+    build: .
+    command: ["python", "-m", "app.results_worker"]
+    environment:
+      DB_PATH: /data/orders.sqlite
+      RABBITMQ_URL: amqp://student:student@rabbitmq:5672/%2F
+    volumes:
+      - orders_data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  consumer-service:
+    build: .
+    command: ["python", "-m", "app.validation_worker"]
+    environment:
+      WORKER_ROLE: consumer
+      VALIDATION_DELAY_SECONDS: "2"
+      RABBITMQ_URL: amqp://student:student@rabbitmq:5672/%2F
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  restaurant-service:
+    build: .
+    command: ["python", "-m", "app.validation_worker"]
+    environment:
+      WORKER_ROLE: restaurant
+      VALIDATION_DELAY_SECONDS: "3"
+      RABBITMQ_URL: amqp://student:student@rabbitmq:5672/%2F
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  rabbitmq_data:
+  orders_data:
