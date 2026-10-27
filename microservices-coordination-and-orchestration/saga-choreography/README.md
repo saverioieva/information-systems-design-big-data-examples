@@ -107,6 +107,12 @@ The rejection state changes represent **simplified business compensation**. This
 
 The example isolates **bad messages** in a DLQ; it does not automatically retry handler/database failures. After investigating an issue, an operator can redeliver manually. A crash after RabbitMQ confirms publication but before `SENT` is stored can produce a duplicate: inbox deduplication remains necessary. Dead lettering using classic queues is a teaching demonstration and is not an unconditional zero-loss guarantee in a clustered broker.
 
+### DLQ vs retry: what actually happens
+
+- **DLQ (quarantine):** the service's main queue is configured with `x-dead-letter-exchange=saga.dlx`. When the handler raises an error, the consumer uses `basic_nack(requeue=False)` and RabbitMQ routes the message to that service's `.dlq`. This is **not** an automatic retry; the message stays there until it is inspected or explicitly replayed.
+- **Connection retry is different:** exponential backoff reconnects Pika after a RabbitMQ connection failure. It does **not** replay messages sitting in a DLQ. In this demo, even a *transient handler exception* goes directly to the DLQ; an operational retry/replay policy would need additional code.
+- **ACK and duplicates:** successful handlers acknowledge only after the local commit. If the consumer loses its connection before acknowledging, RabbitMQ may redeliver; the service's `inbox` prevents repeated business effects. This is separate from publisher confirms, which protect the outbound relay.
+
 ### DLQ exercise: intentionally invalid message
 
 Start the lab, then publish a message *without* a `messageId` to the `consumer.verified` route (only Accounting receives it):

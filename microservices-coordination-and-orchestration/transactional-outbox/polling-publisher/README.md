@@ -111,6 +111,22 @@ While the broker is stopped the **API still commits the order and outbox entry**
 
 The example demonstrates **at-least-once**, *not exactly-once*. Publisher confirms establish broker acceptance but cannot atomically commit PostgreSQL and RabbitMQ together.
 
+### Exercise 4 — Compare with Transaction Log Tailing (runnable sibling lab)
+
+The slides introduce **Transaction Log Tailing** as a second way for a relay to discover committed outbox messages. Instead of repeatedly querying outbox rows, a log-tailing component reads the database transaction log.
+
+| Polling Publisher (this directory) | Transaction Log Tailing ([open lab](../transaction-log-tailing/)) |
+|---|---|
+| Reads pending rows with SQL queries | Reads committed changes from the database transaction log |
+| Python relay publishes to RabbitMQ | A log-reading connector/relay forwards committed outbox records |
+| Polling interval affects latency | Log-stream processing can reduce idle polling |
+| Relay marks entries `SENT` after confirm | Progress tracking depends on the chosen log reader |
+| Must handle retry and duplicates | Also requires recovery and duplicate handling |
+
+**Next exercise:** go to `../transaction-log-tailing/`, run `make up`, and compare the same RabbitMQ message flow with a Python `psycopg2` WAL reader instead of a Python polling relay. Stop the polling stack first with `make down` because both use ports `15672` (RabbitMQ UI) and `8082` (Adminer). **Chapter 5** introduces CDC as a more general data-integration technique, separately from the outbox.
+
+**Scope limitations (polling implementation):** one relay instance; no claim/lease for multiple relays, no dead-letter handling or full crash recovery test harness. These are topics for a production design, not guarantees provided by this demo.
+
 ## Cleanup
 
 ```bash

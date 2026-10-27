@@ -1,67 +1,159 @@
 name: lab-saga-orchestration
-x-base: &base
+
+x-app: &app
   build: .
-  environment: &env
+  environment: &app-env
     AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
-  depends_on:
-    setup:
-      condition: service_completed_successfully
+
+x-postgres-healthcheck: &postgres-healthcheck
+  interval: 5s
+  timeout: 5s
+  retries: 30
+
 services:
   rabbitmq:
     image: rabbitmq:4-management
-    ports: ["15673:15672"]
+    ports:
+      - "15673:15672"
     environment:
       RABBITMQ_DEFAULT_USER: student
       RABBITMQ_DEFAULT_PASS: student
     healthcheck:
-      test: ["CMD","rabbitmq-diagnostics","-q","ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       retries: 30
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+
+  postgres_order:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: order_db
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    volumes:
+      - pg_order_data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *postgres-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U demo -d order_db"]
+
+  postgres_consumer:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: consumer_db
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    volumes:
+      - pg_consumer_data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *postgres-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U demo -d consumer_db"]
+
+  postgres_kitchen:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: kitchen_db
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    volumes:
+      - pg_kitchen_data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *postgres-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U demo -d kitchen_db"]
+
+  postgres_accounting:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: accounting_db
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    volumes:
+      - pg_accounting_data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *postgres-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U demo -d accounting_db"]
+
+  adminer:
+    image: adminer:4
+    ports:
+      - "8082:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres_order
+    depends_on:
+      postgres_order:
+        condition: service_healthy
+      postgres_consumer:
+        condition: service_healthy
+      postgres_kitchen:
+        condition: service_healthy
+      postgres_accounting:
+        condition: service_healthy
+
   setup:
     build: .
     command: python -m app.topology
-    environment: *env
+    environment: *app-env
     depends_on:
       rabbitmq:
         condition: service_healthy
+
   orchestrator:
-    <<: *base
+    <<: *app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-    ports: ["8001:8000"]
+    ports:
+      - "8001:8000"
     environment:
-      <<: *env
+      <<: *app-env
       ROLE: orchestrator
-      DB_FILE: /data/orchestrator.db
-    volumes: ["orchestrator_data:/data"]
+      DATABASE_URL: postgresql+psycopg://demo:demo@postgres_order:5432/order_db
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres_order:
+        condition: service_healthy
+
   consumer:
-    <<: *base
+    <<: *app
     command: python -m app.main
     environment:
-      <<: *env
+      <<: *app-env
       ROLE: consumer
-      DB_FILE: /data/consumer.db
-    volumes: ["consumer_data:/data"]
+      DATABASE_URL: postgresql+psycopg://demo:demo@postgres_consumer:5432/consumer_db
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres_consumer:
+        condition: service_healthy
+
   kitchen:
-    <<: *base
+    <<: *app
     command: python -m app.main
     environment:
-      <<: *env
+      <<: *app-env
       ROLE: kitchen
-      DB_FILE: /data/kitchen.db
-    volumes: ["kitchen_data:/data"]
+      DATABASE_URL: postgresql+psycopg://demo:demo@postgres_kitchen:5432/kitchen_db
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres_kitchen:
+        condition: service_healthy
+
   accounting:
-    <<: *base
+    <<: *app
     command: python -m app.main
     environment:
-      <<: *env
+      <<: *app-env
       ROLE: accounting
-      DB_FILE: /data/accounting.db
-    volumes: ["accounting_data:/data"]
+      DATABASE_URL: postgresql+psycopg://demo:demo@postgres_accounting:5432/accounting_db
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres_accounting:
+        condition: service_healthy
+
 volumes:
   rabbitmq_data:
-  orchestrator_data:
-  consumer_data:
-  kitchen_data:
-  accounting_data:
+  pg_order_data:
+  pg_consumer_data:
+  pg_kitchen_data:
+  pg_accounting_data:
