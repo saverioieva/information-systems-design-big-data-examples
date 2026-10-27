@@ -8,13 +8,13 @@ The labs follow the progression of the slides: asynchronous request processing, 
 
 | # | Directory | Main architectural concept |
 |---|---|---|
-| 0 | [`asynchronous-request-processing/`](asynchronous-request-processing/) | REST `202 Accepted`, validations continuing asynchronously via RabbitMQ; motivation for reliable publishing |
-| 1 | [`transactional-outbox/polling-publisher/`](transactional-outbox/polling-publisher/) | Transactional Outbox with a **Polling Publisher** (PostgreSQL + Python SQL relay + RabbitMQ) |
-| 2 | [`transactional-outbox/transaction-log-tailing/`](transactional-outbox/transaction-log-tailing/) | The **same Outbox Pattern**, using PostgreSQL **WAL** + **Python psycopg2/wal2json** + **RabbitMQ** (no Debezium or Kafka) |
-| 3 | [`saga-choreography/`](saga-choreography/) | Distributed Saga, local transactions, compensation, decentralized event reactions; Adminer and per-service RabbitMQ DLQs |
-| 4 | [`saga-orchestration/`](saga-orchestration/) | Saga coordinator, state machine, commands and replies, compensating actions |
-| 5 | [`saga-isolation/`](saga-isolation/) | Lost updates, interleavings, semantic locks, reread/version techniques |
-| 6 | [`ddd-aggregates/`](ddd-aggregates/) | Aggregate roots, invariants, repositories, domain events; **no Event Sourcing** |
+| 1 | [`asynchronous-request-processing/`](asynchronous-request-processing/) | REST `202 Accepted`, validations continuing asynchronously via RabbitMQ; motivation for reliable publishing |
+| 2 | [`transactional-outbox/polling-publisher/`](transactional-outbox/polling-publisher/) | Transactional Outbox with a **Polling Publisher** (PostgreSQL + Python SQL relay + RabbitMQ) |
+| 3 | [`transactional-outbox/transaction-log-tailing/`](transactional-outbox/transaction-log-tailing/) | The **same Outbox Pattern**, using PostgreSQL **WAL** + **Python psycopg2/wal2json** + **RabbitMQ** (no Debezium or Kafka) |
+| 4 | [`saga-choreography/`](saga-choreography/) | Distributed Saga, local transactions, compensation, decentralized event reactions; Adminer and per-service RabbitMQ DLQs |
+| 5 | [`saga-orchestration/`](saga-orchestration/) | Saga coordinator, state machine, commands and replies, compensating actions |
+| 6 | [`saga-isolation/`](saga-isolation/) | Lost updates, interleavings, semantic locks, reread/version techniques |
+| 7 | [`ddd-aggregates/`](ddd-aggregates/) | Aggregate roots, invariants, repositories, domain events; **no Event Sourcing** |
 
 ## Key architectural distinctions
 
