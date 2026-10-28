@@ -12,7 +12,18 @@ x-order-app: &order-app
 services:
   postgres_order:
     build: ./db
-    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=4", "-c", "max_wal_senders=4"]
+    # PostgreSQL 16.15+ requires explicit allowlisting of third-party logical
+    # output plugins. wal2json is installed in ./db/Dockerfile.
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+      - -c
+      - output_plugin_libraries=pgoutput,test_decoding,wal2json
     environment:
       POSTGRES_USER: demo
       POSTGRES_PASSWORD: demo

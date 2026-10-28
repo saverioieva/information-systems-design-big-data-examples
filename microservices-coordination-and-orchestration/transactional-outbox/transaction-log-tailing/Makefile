@@ -7,13 +7,13 @@ status:
 create:
 	curl -fsS -X POST http://localhost:8004/orders -H 'Content-Type: application/json' -d '{"amount":42.0}'
 orders:
-	$(COMPOSE) exec -T postgres psql -U demo -d orders -c 'SELECT id, amount, status FROM orders;'
+	$(COMPOSE) exec -T postgres_order psql -U demo -d orders -c 'SELECT id, amount, status FROM orders;'
 outbox:
 	curl -fsS http://localhost:8004/outbox
 received:
 	$(COMPOSE) exec -T postgres_audit psql -U demo -d audit -c 'SELECT event_id, order_id, received_at FROM received_events ORDER BY received_at DESC;' 
 wal:
-	$(COMPOSE) exec -T postgres psql -U demo -d orders -c 'SELECT slot_name, plugin, active, confirmed_flush_lsn, restart_lsn FROM pg_replication_slots;'
+	$(COMPOSE) exec -T postgres_order psql -U demo -d orders -c 'SELECT slot_name, plugin, active, confirmed_flush_lsn, restart_lsn FROM pg_replication_slots;'
 logs:
 	$(COMPOSE) logs -f relay audit api
 broker-pause:

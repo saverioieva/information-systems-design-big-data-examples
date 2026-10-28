@@ -108,13 +108,36 @@ Adminer shows the SQL-level replication metadata, **not the raw WAL records**.
 Use `make wal` and `make logs` to follow transaction-log processing.
 
 
-The `postgres_order` container runs with `wal_level=logical` and a `wal2json`
-plugin; a dedicated `slot-init` container creates `outbox_slot` **on
+The `postgres_order` container runs with `wal_level=logical` and the `wal2json`
+plugin, installed by `db/Dockerfile`. The Docker Compose command also sets
+`output_plugin_libraries=pgoutput,test_decoding,wal2json`: PostgreSQL **16.15+**
+requires the server to explicitly allowlist third-party output plugins before a
+replication slot can use them. This configuration is on **Order PostgreSQL only**;
+the Audit database does not need logical replication.
+
+A dedicated `slot-init` container creates `outbox_slot` **on
 `postgres_order`** before the HTTP API starts accepting requests, avoiding
 missed early writes. The relay's changes
 are restricted to `public.outbox_events` by `wal2json`'s `add-tables` setting.
 The durable slot's `confirmed_flush_lsn` is stored by PostgreSQL, not in a
 stateless Python process.
+
+### Troubleshooting `wal2json` permissions
+
+If `slot-init` reports `library "wal2json" may not be used as an output plugin`,
+verify the allowlist on the **Order** database:
+
+```bash
+docker compose exec -T postgres_order psql -U demo -d orders -c 'SHOW output_plugin_libraries;'
+```
+
+The result must include `wal2json`. After updating `docker-compose.yml`, run
+`make up` to recreate the affected containers without deleting their volumes.
+If `slot-init` still shows a previous failed execution, run
+`docker compose up -d --force-recreate slot-init api relay`.
+**Do not use `make reset` just to fix this configuration**: that deletes both
+PostgreSQL volumes and the broker volume. `make orders` and `make wal` both
+connect to `postgres_order` (not the deprecated `postgres` service name).
 
 ## Recommended reading order
 
