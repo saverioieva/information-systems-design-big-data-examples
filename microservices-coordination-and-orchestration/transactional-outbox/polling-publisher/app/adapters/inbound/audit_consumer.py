@@ -4,11 +4,11 @@ import os
 import time
 import pika
 from app.application.use_cases import AuditHandler
-from app.adapters.outbound.postgres_repository import PostgresOutboxRepository
+from app.adapters.outbound.postgres_audit_repository import PostgresAuditRepository
 from app.adapters.outbound.rabbitmq_publisher import EXCHANGE
 
 def run():
-    repo = PostgresOutboxRepository(); repo.initialize()
+    repo = PostgresAuditRepository(); repo.initialize()
     handler = AuditHandler(repo)
     while True:
         try:
@@ -28,3 +28,7 @@ def run():
             channel.basic_consume(queue='outbox.audit',on_message_callback=on_message)
             channel.start_consuming()
         except (pika.exceptions.AMQPError,OSError): time.sleep(2)
+
+
+if __name__ == "__main__":
+    run()

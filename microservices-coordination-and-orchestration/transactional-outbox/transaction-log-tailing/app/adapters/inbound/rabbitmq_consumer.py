@@ -2,11 +2,10 @@
 import os
 import time
 import pika
-from app.application.use_cases import OutboxUseCases
-from app.adapters.outbound.postgres_repository import PostgresOrderRepository
+from app.application.use_cases import AuditDeliveryHandler
+from app.adapters.outbound.postgres_audit_repository import PostgresAuditRepository
 from app.messaging_constants import EXCHANGE, QUEUE, ROUTING_KEY
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://demo:demo@postgres:5432/orders")
 AMQP_URL = os.getenv("AMQP_URL", "amqp://student:student@rabbitmq:5672/%2F")
 
 def connect():
@@ -32,7 +31,7 @@ def topology():
 
 
 def consumer():
-    service = OutboxUseCases(PostgresOrderRepository())
+    service = AuditDeliveryHandler(PostgresAuditRepository())
     while True:
         conn = connect()
         try:

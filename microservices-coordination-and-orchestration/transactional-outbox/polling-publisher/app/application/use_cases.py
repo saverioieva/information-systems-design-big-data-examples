@@ -3,6 +3,7 @@ import os
 from app.domain.order import new_order
 from app.ports.repositories import OutboxRepository
 from app.ports.publisher import MessagePublisher
+from app.ports.audit_repository import AuditRepository
 
 class OutboxUseCases:
     def __init__(self, repo: OutboxRepository):
@@ -15,8 +16,6 @@ class OutboxUseCases:
         return self.repo.find_order(order_id)
     def get_outbox(self) -> list[dict]:
         return self.repo.outbox_rows()
-    def get_received(self) -> list[dict]:
-        return self.repo.received_rows()
 
 class PollingRelay:
     def __init__(self, repo: OutboxRepository, publisher: MessagePublisher):
@@ -33,6 +32,6 @@ class PollingRelay:
         return True
 
 class AuditHandler:
-    def __init__(self, repo: OutboxRepository): self.repo = repo
+    def __init__(self, repo: AuditRepository): self.repo = repo
     def handle(self, event: dict) -> None:
         self.repo.record_delivery(event['eventId'], event['orderId'])

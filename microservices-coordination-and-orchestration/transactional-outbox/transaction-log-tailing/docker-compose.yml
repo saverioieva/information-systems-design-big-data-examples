@@ -1,15 +1,16 @@
 name: lab-outbox-log-tailing
 
-x-app: &app
+# The WAL relay connects exclusively to the Order Service database.
+x-order-app: &order-app
   build: .
   environment:
-    DATABASE_URL: postgresql+psycopg://demo:demo@postgres:5432/orders
+    DATABASE_URL: postgresql+psycopg://demo:demo@postgres_order:5432/orders
     AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
-    REPLICATION_DSN: "dbname=orders user=demo password=demo host=postgres port=5432"
+    REPLICATION_DSN: "dbname=orders user=demo password=demo host=postgres_order port=5432"
     REPLICATION_SLOT: outbox_slot
 
 services:
-  postgres:
+  postgres_order:
     build: ./db
     command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=4", "-c", "max_wal_senders=4"]
     environment:
@@ -17,7 +18,7 @@ services:
       POSTGRES_PASSWORD: demo
       POSTGRES_DB: orders
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres_order_data:/var/lib/postgresql/data
       - ./db/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U demo -d orders"]
@@ -25,14 +26,32 @@ services:
       timeout: 3s
       retries: 30
 
+  # Audit does NOT connect to the Order PostgreSQL instance or WAL slot.
+  postgres_audit:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: audit
+    volumes:
+      - postgres_audit_data:/var/lib/postgresql/data
+      - ./db/002_audit_schema.sql:/docker-entrypoint-initdb.d/002_audit_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d audit"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
   adminer:
     image: adminer:4
     environment:
-      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DEFAULT_SERVER: postgres_order
     ports:
       - "8082:8080"
     depends_on:
-      postgres:
+      postgres_order:
+        condition: service_healthy
+      postgres_audit:
         condition: service_healthy
     restart: unless-stopped
 
@@ -52,15 +71,15 @@ services:
       retries: 30
 
   slot-init:
-    <<: *app
+    <<: *order-app
     command: python -m app.log_tailing init-slot
     restart: "no"
     depends_on:
-      postgres:
+      postgres_order:
         condition: service_healthy
 
   topology:
-    <<: *app
+    <<: *order-app
     command: python -m app.messaging topology
     restart: "no"
     depends_on:
@@ -68,7 +87,7 @@ services:
         condition: service_healthy
 
   api:
-    <<: *app
+    <<: *order-app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8004:8000"
@@ -77,17 +96,20 @@ services:
         condition: service_completed_successfully
 
   audit:
-    <<: *app
+    build: .
     command: python -m app.messaging consumer
     restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://demo:demo@postgres_audit:5432/audit
+      AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
     depends_on:
-      postgres:
+      postgres_audit:
         condition: service_healthy
       topology:
         condition: service_completed_successfully
 
   relay:
-    <<: *app
+    <<: *order-app
     command: python -m app.log_tailing relay
     restart: unless-stopped
     depends_on:
@@ -97,5 +119,6 @@ services:
         condition: service_completed_successfully
 
 volumes:
-  pgdata:
+  postgres_order_data:
+  postgres_audit_data:
   rabbitmq_data:

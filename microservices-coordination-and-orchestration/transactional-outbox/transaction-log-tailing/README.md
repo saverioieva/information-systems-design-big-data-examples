@@ -21,8 +21,9 @@ Kafka, or Event Sourcing** in this lab.
 ```text
    Client --POST /orders--> FastAPI Order Service
                                  |
-                      PostgreSQL transaction
-                     INSERT orders + outbox_events
+                        postgres_order (orders DB)
+                   INSERT orders + outbox_events
+                         (one transaction)
                                  |
                       PostgreSQL WAL (logical)
                                  |
@@ -31,14 +32,18 @@ Kafka, or Event Sourcing** in this lab.
                                  |
                       RabbitMQ outbox.events
                                  |
-                         audit consumer
-                  deduplicates by event_id
+                         Audit Consumer
+                                 |
+                       postgres_audit (audit DB)
+                      received_events (dedup)
 ```
 
 **Not Event Sourcing:** `orders` is the authoritative current state; `outbox_events`
 is an append-only table of messages to publish, not the source for reconstructing state.
-The consumer's `received_events` table is teaching-only, stored in the same database
-for convenience; production services should own separate databases.
+The Audit Consumer **owns a separate PostgreSQL instance**, `postgres_audit`,
+with its own `audit` database and volume. Its `received_events` table never
+lives in the Order Service database. The WAL relay connects **only** to
+`postgres_order`, where the Order Service owns the outbox and the replication slot.
 
 ## Requirements and running
 
@@ -51,8 +56,8 @@ make status
 make create
 make orders
 make outbox
-make received
-make wal
+make received   # Query postgres_audit with psql
+make wal        # Inspect the slot on postgres_order
 ```
 
 UI: http://localhost:15672 (`student` / `student`). The exchange is `outbox.events`
@@ -65,20 +70,30 @@ Adminer runs as a service in this lab. Open <http://localhost:8082>:
 | Field | Value |
 |---|---|
 | System | PostgreSQL |
-| Server | `postgres` |
+| Server | `postgres_order` |
 | Username | `demo` |
 | Password | `demo` |
 | Database | `orders` |
 
-In **SQL command**, inspect the application state and append-only outbox:
+In **SQL command** on **`postgres_order`**, inspect Order state and outbox:
 
 ```sql
 SELECT id, amount, status FROM orders;
 SELECT event_id, aggregate_id, event_type, created_at
 FROM outbox_events ORDER BY created_at DESC;
+```
+
+Reconnect to Adminer with **server `postgres_audit`, database `audit`**
+(same `demo` / `demo` credentials) to inspect the consumer's own data:
+
+```sql
 SELECT event_id, order_id, received_at
 FROM received_events ORDER BY received_at DESC;
 ```
+
+`make received` executes this query in the **Audit** PostgreSQL container.
+The Order API no longer exposes `GET /received`, because it cannot read another
+service's database. There are **two separate PostgreSQL servers and volumes**.
 
 Unlike the Polling Publisher example, `outbox_events` has **no `SENT` status**:
 the relay tracks progress via the PostgreSQL logical replication slot. To inspect
@@ -93,8 +108,10 @@ Adminer shows the SQL-level replication metadata, **not the raw WAL records**.
 Use `make wal` and `make logs` to follow transaction-log processing.
 
 
-A dedicated `slot-init` container creates `outbox_slot` **before** the HTTP API
-starts accepting requests; this avoids missing early writes. The relay's changes
+The `postgres_order` container runs with `wal_level=logical` and a `wal2json`
+plugin; a dedicated `slot-init` container creates `outbox_slot` **on
+`postgres_order`** before the HTTP API starts accepting requests, avoiding
+missed early writes. The relay's changes
 are restricted to `public.outbox_events` by `wal2json`'s `add-tables` setting.
 The durable slot's `confirmed_flush_lsn` is stored by PostgreSQL, not in a
 stateless Python process.
@@ -106,13 +123,15 @@ stateless Python process.
 | `app/domain/order.py` | Order state and outgoing notification intent |
 | `app/application/use_cases.py` | Create order without publishing directly |
 | `app/ports/repository.py` | Persistence interface |
-| `app/adapters/outbound/postgres_repository.py` | Atomic SQL transaction inserting order and outbox row |
+| `app/adapters/outbound/postgres_repository.py` | Order DB: atomic SQL transaction inserting order and outbox row |
+| `app/adapters/outbound/postgres_audit_repository.py` | Audit DB: idempotent `received_events` insert |
 | `app/application/log_tail_relay.py` | Pure filtering of committed WAL batches |
 | `app/ports/publisher.py` | Outbound messaging port |
 | `app/adapters/inbound/postgres_wal_reader.py` | Logical replication slot, streaming and WAL acknowledgments |
 | `app/adapters/outbound/rabbitmq_publisher.py` | RabbitMQ persistent publish + publisher confirms |
-| `app/adapters/inbound/rabbitmq_consumer.py` | Consumer deduplication and acknowledgments |
-| `db/Dockerfile` | PostgreSQL 16 with `wal2json` installed |
+| `app/adapters/inbound/rabbitmq_consumer.py` | Consumer deduplication in Audit DB and acknowledgments |
+| `db/Dockerfile` | **Order** PostgreSQL 16 with `wal2json` installed |
+| `db/001_schema.sql` / `db/002_audit_schema.sql` | Order/outbox tables versus Audit-only delivery table |
 
 ## Experiments
 
@@ -123,6 +142,7 @@ append-only, and **the durable WAL offset**, not the row status, records progres
 **2 — Observe recovery.** After `make up`, run `make relay-stop`, then
 `make create`. The API still commits both rows. Run `make received` (no new row yet),
 then `make relay-start`, and repeat `make received` and `make wal`.
+`make received` reads the independent Audit database.
 
 **3 — Observe broker outage.** Run `make broker-pause` and `make create`,
 then `make broker-resume`. The relay retries and processes the retained WAL data.
@@ -130,14 +150,14 @@ A successful publisher confirmation must precede WAL feedback.
 
 **4 — Discuss the failure window.** A relay can crash **after RabbitMQ confirms**
 and **before PostgreSQL records WAL progress**; the message may be published
-again after restart. The audit consumer's `event_id` is unique and uses
+again after restart. The audit consumer's `event_id` is unique in its **own database** and uses
 `ON CONFLICT DO NOTHING`. This is *at-least-once*, not exactly-once.
 
 ```bash
 make logs
 make relay-restart
 make down      # preserve database, slot, broker state
-make reset     # WARNING: delete volumes and all teaching data
+make reset     # WARNING: delete both PostgreSQL volumes and broker data
 ```
 
 ## Important constraints
@@ -152,8 +172,14 @@ make reset     # WARNING: delete volumes and all teaching data
   raw WAL without the server's decoding support.
 - The relay uses RabbitMQ confirms and sends replication feedback only afterward;
   it can still replay messages on restart. The consumer must be idempotent.
-- This lab starts from a fresh database and creates the replication slot before
+- This lab starts from fresh databases and creates the replication slot before
   application writes. It intentionally has no existing-data snapshot or backfill.
+- When replacing the old shared-database example, use `make down`, `make reset`
+  (destructive), then `make up` to start fresh. The older shared DB volume is
+  not migrated. The Order database should contain `orders` and `outbox_events`;
+  the Audit database should contain only `received_events`.
+- The delivery record is an **Audit-side idempotency marker**, not a shared
+  Order/Audit table or distributed SQL transaction.
 
 ## Technical references
 

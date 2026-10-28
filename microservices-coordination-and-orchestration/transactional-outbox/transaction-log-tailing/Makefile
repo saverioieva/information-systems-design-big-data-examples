@@ -1,7 +1,7 @@
 COMPOSE = docker compose
 .PHONY: up status create orders outbox received wal logs down reset test broker-pause broker-resume relay-restart relay-stop relay-start
 up:
-	$(COMPOSE) up -d --build
+	$(COMPOSE) up -d --build --remove-orphans
 status:
 	$(COMPOSE) ps
 create:
@@ -11,7 +11,7 @@ orders:
 outbox:
 	curl -fsS http://localhost:8004/outbox
 received:
-	curl -fsS http://localhost:8004/received
+	$(COMPOSE) exec -T postgres_audit psql -U demo -d audit -c 'SELECT event_id, order_id, received_at FROM received_events ORDER BY received_at DESC;' 
 wal:
 	$(COMPOSE) exec -T postgres psql -U demo -d orders -c 'SELECT slot_name, plugin, active, confirmed_flush_lsn, restart_lsn FROM pg_replication_slots;'
 logs:
@@ -29,6 +29,6 @@ relay-start:
 test:
 	python -m unittest discover -s tests -v
 down:
-	$(COMPOSE) down
+	$(COMPOSE) down --remove-orphans
 reset:
-	$(COMPOSE) down -v
+	$(COMPOSE) down -v --remove-orphans

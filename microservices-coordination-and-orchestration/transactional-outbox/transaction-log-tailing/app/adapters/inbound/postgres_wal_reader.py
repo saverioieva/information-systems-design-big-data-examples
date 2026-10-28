@@ -12,7 +12,7 @@ from psycopg2.extras import LogicalReplicationConnection
 from app.application.log_tail_relay import LogTailRelay
 from app.adapters.outbound.rabbitmq_publisher import RabbitMQPublisher
 
-DSN = os.getenv('REPLICATION_DSN', 'dbname=orders user=demo password=demo host=postgres port=5432')
+DSN = os.getenv('REPLICATION_DSN', 'dbname=orders user=demo password=demo host=postgres_order port=5432')
 SLOT = os.getenv('REPLICATION_SLOT', 'outbox_slot')
 
 

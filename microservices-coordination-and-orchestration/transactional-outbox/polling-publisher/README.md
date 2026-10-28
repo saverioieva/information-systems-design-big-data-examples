@@ -17,20 +17,21 @@ The slides also introduce **Transaction Log Tailing**. The sibling [Transaction 
 ## Architecture
 
 ```text
-POST /orders -> API -> [Postgres: orders + outbox]  (one transaction)
-                                    |
-                             polling relay
-                                    |
-                         publisher confirms
-                                    v
-                    RabbitMQ exchange outbox.events
-                                    |
-                              audit queue
-                                    |
-                 audit consumer -> received_events (dedup)
+POST /orders -> Order API -> [postgres_order: orders + outbox] (one transaction)
+                                          |
+                                   polling relay
+                                          |
+                                   RabbitMQ publish
+                                   + broker confirm
+                                          v
+                                   outbox.audit queue
+                                          |
+                                   Audit Consumer
+                                          |
+                          [postgres_audit: received_events]
 ```
 
-The example uses one Postgres database for the Order Service and a teaching-only audit consumer storing its deduplication marker in the same database. **In production, each service should own its database.** We use the shared database here only to isolate the outbox mechanism from service boundaries.
+**Database per Service:** Order API and the polling relay use `postgres_order` (`orders` database) because the relay must read the Order Service's outbox. The Audit Consumer uses **its own PostgreSQL container**, `postgres_audit` (`audit` database), and writes only `received_events` there. Each PostgreSQL instance has a separate persistent Docker volume. Services exchange events through RabbitMQ; the Order API never reads the Audit database.
 
 ## Run
 
@@ -38,9 +39,10 @@ Requirements: Docker Compose, Make, and `curl`. Ports: `8000` (API), `15672` (Ra
 
 ```bash
 make up
+make status    # Inspect Docker Compose containers
 make create
-make outbox
-make received
+make outbox     # Order database: PENDING/SENT
+make received   # Audit database: deduplicated deliveries (psql)
 make logs
 ```
 
@@ -54,20 +56,29 @@ Adminer is included in this lab's `docker-compose.yml`. Open
 | Field | Value |
 |---|---|
 | System | PostgreSQL |
-| Server | `postgres` |
+| Server | `postgres_order` |
 | Username | `demo` |
 | Password | `demo` |
 | Database | `orders` |
 
-In **SQL command**, run:
+**Order database** — connect to server `postgres_order`, database `orders`:
 
 ```sql
 SELECT id, amount, status FROM orders;
 SELECT event_id, routing_key, status, attempts, created_at, sent_at
 FROM outbox ORDER BY created_at DESC;
+```
+
+**Audit database** — log out of Adminer and reconnect using server `postgres_audit`, database `audit` (same demo credentials):
+
+```sql
 SELECT event_id, aggregate_id, received_at
 FROM received_events ORDER BY received_at DESC;
 ```
+
+`received_events` is deliberately **not** in the Order database. `make received`
+queries `postgres_audit` using `psql`, not an Order API endpoint (`GET /received`
+has been removed to avoid cross-service database access).
 
 Create an order with `make create`. The relay may move the outbox row from
 `PENDING` to `SENT` quickly; use `make broker-pause` before creating an order
@@ -81,15 +92,16 @@ Adminer is a **database viewer**, not the message broker management UI.
 |---|---|
 | `app/adapters/outbound/postgres_repository.py` — `save_order_and_message()` | Business update and outbox insert in **one** DB transaction |
 | `app/application/use_cases.py` — `PollingRelay.publish_once()` | Polling, publisher confirmation, marking `SENT` |
-| `app/adapters/inbound/audit_consumer.py` — `run()` | `basic_ack` after persistence, deduplication by event ID |
-| `docker-compose.yml` | Separate API, relay and consumer processes |
+| `app/adapters/inbound/audit_consumer.py` — `run()` | `basic_ack` after persisting in the **Audit** database; deduplication by event ID |
+| `app/adapters/outbound/postgres_audit_repository.py` | Audit-only adapter: `received_events` unique `event_id` |
+| `docker-compose.yml` | Two PostgreSQL containers / volumes; independent Order and Audit ownership |
 
 ### Exercise 1 — Observe a successful event
 
 1. Run `make up`; then `make create`.
 2. Observe the JSON API response: it contains `eventId` and `orderId`.
 3. Run `make outbox`: the row should eventually show `status: SENT`.
-4. Run `make received`: there should be one row with the matching `eventId`.
+4. Run `make received`: the **Audit database** should contain one row with the matching `eventId`.
 5. Locate the `outbox.events` topic exchange and `outbox.audit` queue in RabbitMQ UI.
 
 ### Exercise 2 — Broker temporarily unavailable
@@ -107,7 +119,7 @@ While the broker is stopped the **API still commits the order and outbox entry**
 
 ### Exercise 3 — Why duplicates are possible
 
-`relay()` has a teaching switch `CRASH_AFTER_CONFIRM=1`. Set it in the `relay` service environment and recreate the relay, then create an order. The relay exits **after** a broker confirmation but **before** the database update to `SENT`. Restarting it without the switch republishes the event; `received_events` is protected by a unique event ID.
+`relay()` has a teaching switch `CRASH_AFTER_CONFIRM=1`. Set it in the `relay` service environment and recreate the relay, then create an order. The relay exits **after** a broker confirmation but **before** the database update to `SENT`. Restarting it without the switch republishes the event; the **Audit database's** `received_events` table is protected by a unique event ID.
 
 The example demonstrates **at-least-once**, *not exactly-once*. Publisher confirms establish broker acceptance but cannot atomically commit PostgreSQL and RabbitMQ together.
 
@@ -131,7 +143,7 @@ The slides introduce **Transaction Log Tailing** as a second way for a relay to 
 
 ```bash
 make down     # keep database volumes
-make reset    # WARNING: delete persisted data
+make reset    # WARNING: delete BOTH PostgreSQL volumes and RabbitMQ data
 ```
 
 ## Hexagonal code map
@@ -140,8 +152,10 @@ make reset    # WARNING: delete persisted data
 |---|---|
 | Domain | `app/domain/order.py`: current-state order notification |
 | Application | `app/application/use_cases.py`: order creation, polling relay, audit handler |
-| Ports | `app/ports/repositories.py`, `app/ports/publisher.py` |
-| Outbound adapters | `app/adapters/outbound/`: SQLAlchemy repository and RabbitMQ publisher |
+| Ports | `app/ports/repositories.py`, `app/ports/audit_repository.py`, `app/ports/publisher.py` |
+| Outbound adapters | `app/adapters/outbound/`: separate Order/Audit SQLAlchemy repositories and RabbitMQ publisher |
 | Inbound adapters | `app/main.py`: FastAPI composition root; `app/adapters/inbound/audit_consumer.py` |
 
-The outbox write remains in the PostgreSQL adapter inside one transaction; the application only asks the repository to persist the order **and** publication intention atomically.
+The outbox write remains in the Order PostgreSQL adapter inside one transaction; the application only asks the repository to persist the order **and** publication intention atomically. The Audit Consumer persists its own deduplication record and acknowledges RabbitMQ **after** that transaction commits.
+
+**Upgrading from an earlier shared-database version:** use `make down`, then `make reset` (destructive), then `make up` for a clean lab. New named volumes are independent; the old shared database volume is not migrated. A previous `received_events` table in an old Order volume is historical data, not used by this version.

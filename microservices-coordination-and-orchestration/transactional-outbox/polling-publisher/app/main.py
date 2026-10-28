@@ -28,9 +28,6 @@ def get_order(order_id:str):
 @app.get('/outbox')
 def list_outbox(): return use_cases.get_outbox()
 
-@app.get('/received')
-def list_received(): return use_cases.get_received()
-
 def relay():
     repository.initialize()
     while True:
@@ -45,10 +42,6 @@ def relay():
         except Exception as exc:
             print(f'[retry] relay: {exc}',flush=True)
             time.sleep(2)
-
-def consumer():
-    from app.adapters.inbound.audit_consumer import run
-    run()
 
 if __name__=='__main__':
     import uvicorn

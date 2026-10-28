@@ -21,5 +21,3 @@ def get_order(order_id:str):
 @app.get('/outbox')
 def outbox():return service.get_outbox()
 
-@app.get('/received')
-def received():return service.get_received()

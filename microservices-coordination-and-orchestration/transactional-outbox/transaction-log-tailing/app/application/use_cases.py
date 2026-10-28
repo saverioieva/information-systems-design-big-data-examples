@@ -1,6 +1,7 @@
 """Inbound HTTP/RabbitMQ adapters call these use cases."""
 from app.domain.order import new_order
 from app.ports.repository import OrderRepository
+from app.ports.audit_repository import AuditRepository
 from app.contract import decode_message
 
 class OutboxUseCases:
@@ -11,8 +12,10 @@ class OutboxUseCases:
         return order.as_message()
     def get_order(self,oid:str) -> dict | None: return self.repo.find_order(oid)
     def get_outbox(self) -> list[dict]: return self.repo.outbox_rows()
-    def get_received(self) -> list[dict]: return self.repo.received_rows()
+
+class AuditDeliveryHandler:
+    def __init__(self, repo: AuditRepository): self.repo=repo
     def handle_delivery(self, payload: bytes) -> dict:
         message = decode_message(payload)
-        self.repo.record_received(message['eventId'],message['orderId'])
+        self.repo.record_received(message['eventId'], message['orderId'])
         return message

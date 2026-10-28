@@ -20,16 +20,11 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     sent_at TIMESTAMPTZ
 );
-CREATE TABLE IF NOT EXISTS received_events (
-    event_id VARCHAR(40) PRIMARY KEY,
-    aggregate_id VARCHAR(40) NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
 """
 
 class PostgresOutboxRepository:
     def __init__(self, engine=None):
-        self.engine = engine or create_engine(os.getenv("DATABASE_URL", "postgresql+psycopg://demo:demo@postgres:5432/orders"), pool_pre_ping=True)
+        self.engine = engine or create_engine(os.getenv("DATABASE_URL", "postgresql+psycopg://demo:demo@postgres_order:5432/orders"), pool_pre_ping=True)
 
     def initialize(self):
         with self.engine.begin() as conn:
@@ -67,12 +62,3 @@ class PostgresOutboxRepository:
             rows=db.execute(text("SELECT event_id,aggregate_id,status,attempts FROM outbox ORDER BY created_at"))
             return [dict(row) for row in rows.mappings()]
 
-    def received_rows(self):
-        with self.engine.connect() as db:
-            rows=db.execute(text("SELECT event_id,aggregate_id FROM received_events ORDER BY received_at"))
-            return [dict(row) for row in rows.mappings()]
-
-    def record_delivery(self,event_id,order_id):
-        with self.engine.begin() as db:
-            db.execute(text("""INSERT INTO received_events(event_id,aggregate_id)
-                               VALUES (:id,:oid) ON CONFLICT (event_id) DO NOTHING"""),{"id":event_id,"oid":order_id})

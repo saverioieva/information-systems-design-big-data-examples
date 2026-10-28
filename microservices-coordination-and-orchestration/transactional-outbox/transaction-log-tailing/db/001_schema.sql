@@ -13,10 +13,4 @@ CREATE TABLE outbox_events (
     payload JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
--- Teaching-only consumer deduplication table.
-CREATE TABLE received_events (
-    event_id VARCHAR(40) PRIMARY KEY,
-    order_id VARCHAR(40) NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
 -- wal2json reads the WAL through a logical slot; no SQL publication required.
