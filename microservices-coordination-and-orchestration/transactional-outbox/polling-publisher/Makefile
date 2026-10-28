@@ -2,6 +2,8 @@ COMPOSE=docker compose
 .PHONY: up down reset logs create outbox received broker-pause broker-resume test
 up:
 	$(COMPOSE) up -d --build
+status:
+	$(COMPOSE) ps
 logs:
 	$(COMPOSE) logs -f api relay audit
 create:
