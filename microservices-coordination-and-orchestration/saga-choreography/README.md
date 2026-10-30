@@ -13,7 +13,56 @@ This README contains the implementation material that can be removed from the le
 - Observe the Accounting decision (a simplified pivot) and the order/ticket state changes on success or failure.
 - Inspect the per-service **dead-letter queues**, end-to-end `[flow]` logs, and Adminer; discuss duplicate delivery and the remaining production limitations.
 
-## 1. Service-level implementation
+## 1. Architecture overview
+
+The **Order, Consumer, Kitchen, and Accounting** bounded contexts each own a service and an independent PostgreSQL container. They communicate through **domain events in RabbitMQ**, never by accessing another service's database. Each service commits its local business changes and outgoing events to its own transactional outbox.
+
+```mermaid
+flowchart TB
+    Client["Client"] -->|"POST /orders"| OrderApp
+
+    subgraph OrderContext["Order bounded context"]
+        direction TB
+        OrderApp["Order Service<br/>FastAPI, event consumer, outbox publisher"]
+        OrderDB[("postgres_order<br/>orderdb")]
+        OrderApp -->|"local SQL transactions"| OrderDB
+    end
+
+    subgraph ConsumerContext["Consumer bounded context"]
+        direction TB
+        ConsumerApp["Consumer Service<br/>validation and event handling"]
+        ConsumerDB[("postgres_consumer<br/>consumerdb")]
+        ConsumerApp -->|"local SQL transactions"| ConsumerDB
+    end
+
+    subgraph KitchenContext["Kitchen bounded context"]
+        direction TB
+        KitchenApp["Kitchen Service<br/>ticket creation and compensation"]
+        KitchenDB[("postgres_kitchen<br/>kitchendb")]
+        KitchenApp -->|"local SQL transactions"| KitchenDB
+    end
+
+    subgraph AccountingContext["Accounting bounded context"]
+        direction TB
+        AccountingApp["Accounting Service<br/>prerequisites and card decision"]
+        AccountingDB[("postgres_accounting<br/>accountingdb")]
+        AccountingApp -->|"local SQL transactions"| AccountingDB
+    end
+
+    Broker["RabbitMQ<br/>domain-event routing"]
+    OrderApp -->|"order.* events via outbox"| Broker
+    Broker -->|"accounting.* events"| OrderApp
+    Broker -->|"order.created"| ConsumerApp
+    ConsumerApp -->|"consumer.* events via outbox"| Broker
+    Broker -->|"order.created and accounting.* events"| KitchenApp
+    KitchenApp -->|"kitchen.* events via outbox"| Broker
+    Broker -->|"order.*, consumer.*, kitchen.* events"| AccountingApp
+    AccountingApp -->|"accounting.* events via outbox"| Broker
+```
+
+**Read this as a logical architecture diagram:** each inbound event is consumed from a RabbitMQ queue, while each outgoing event is delivered by the service's local Outbox publisher. The **four topic exchanges, their exact routing keys, and the DLQs** are detailed in the AMQP diagrams below. The separate `audit.q` is a broker queue for inspection, **not** a fifth microservice.
+
+### Service-level implementation
 
 | Service | Entry points and responsibility | Code |
 |---|---|---|
@@ -24,19 +73,76 @@ This README contains the implementation material that can be removed from the le
 
 The services use `domain/` for pure policies, `application/` for use cases and routing, `ports/` for repository contracts, and `adapters/outbound/` for SQLAlchemy persistence. Each `app.py` is the inbound HTTP/RabbitMQ adapter and composition root.
 
-### RabbitMQ routing
+### AMQP connections, channels and routing (one topic exchange per bounded context)
 
-`topology.py` creates the durable **topic exchange `saga`**, a durable **dead-letter exchange `saga.dlx`** (direct), and durable queues `order.q`, `consumer.q`, `kitchen.q`, `accounting.q`, and `audit.q`. Each main queue has a matching `<queue>.dlq`, e.g. `accounting.q.dlq`.
+The topology uses **four durable topic exchanges**, one owned by each bounded context, plus a shared **direct dead-letter exchange** (`saga.dlx`). The event routing key names the event; it is **not** the exchange itself. Queue bindings can subscribe to events from *multiple* context exchanges.
 
-| Queue | Routing keys |
+| Event owner | Topic exchange | Example routing keys |
+|---|---|---|
+| Order Service | `orders.events` | `order.created`, `order.approved`, `order.rejected` |
+| Consumer Service | `consumers.events` | `consumer.verified`, `consumer.verificationFailed` |
+| Kitchen Service | `kitchen.events` | `kitchen.ticketCreated`, `kitchen.ticketRejected` |
+| Accounting Service | `accounting.events` | `accounting.creditCardAuthorized`, `accounting.creditCardAuthorizationFailed` |
+
+**AMQP connections and channels.** Each active service runs one RabbitMQ consumer loop and one Outbox publisher loop. Because the code uses Pika `BlockingConnection` in separate threads, each loop has its **own TCP connection and AMQP channel**. A channel is not created for every event, exchange, or routing key. `topology.py` uses a short-lived connection and channel to declare exchanges, queues and bindings.
+
+```mermaid
+flowchart LR
+    subgraph Service["Each active microservice"]
+        direction TB
+        P["Outbox publisher<br/>connection + channel"]
+        C["Event consumer<br/>connection + channel"]
+    end
+    subgraph RabbitMQ["RabbitMQ broker"]
+        direction TB
+        X["Owned topic exchange<br/>orders.events / consumers.events /<br/>kitchen.events / accounting.events"]
+        Q["service.q<br/>durable queue with bindings"]
+        D["saga.dlx<br/>direct dead-letter exchange"]
+        Dead["service.q.dlq<br/>quarantine queue"]
+    end
+    P -->|"publish by event routing key"| X
+    X -->|"matching queue binding"| Q
+    Q -->|"deliver"| C
+    C -.->|"ACK after commit"| Q
+    Q -.->|"NACK without requeue"| D
+    D -->|"queue name as routing key"| Dead
+```
+
+**Actual cross-context event bindings** (a single service queue may bind to several exchanges):
+
+```mermaid
+flowchart LR
+    O["orders.events<br/>topic"]
+    U["consumers.events<br/>topic"]
+    K["kitchen.events<br/>topic"]
+    A["accounting.events<br/>topic"]
+    CQ["consumer.q"]
+    KQ["kitchen.q"]
+    AQ["accounting.q"]
+    OQ["order.q"]
+    AUD["audit.q<br/>no active consumer"]
+    O -->|"order.created"| CQ
+    O -->|"order.created"| KQ
+    O -->|"order.created"| AQ
+    O -->|"order.approved / order.rejected"| AUD
+    U -->|"consumer.verified / verificationFailed"| AQ
+    K -->|"kitchen.ticketCreated"| AQ
+    K -->|"kitchen.ticketRejected"| AUD
+    A -->|"creditCardAuthorized / AuthorizationFailed"| KQ
+    A -->|"creditCardAuthorized / AuthorizationFailed"| OQ
+```
+
+| Service queue | Exchange and routing key bindings |
 |---|---|
-| `consumer.q` | `order.created` |
-| `kitchen.q` | `order.created`, `accounting.creditCardAuthorized`, `accounting.creditCardAuthorizationFailed` |
-| `accounting.q` | `order.created`, `consumer.verified`, `consumer.verificationFailed`, `kitchen.ticketCreated` |
-| `order.q` | `accounting.creditCardAuthorized`, `accounting.creditCardAuthorizationFailed` |
-| `audit.q` | `order.approved`, `order.rejected`, `kitchen.ticketRejected` |
+| `consumer.q` | `orders.events` / `order.created` |
+| `kitchen.q` | `orders.events` / `order.created`; `accounting.events` / `accounting.creditCardAuthorized`, `accounting.creditCardAuthorizationFailed` |
+| `accounting.q` | `orders.events` / `order.created`; `consumers.events` / `consumer.verified`, `consumer.verificationFailed`; `kitchen.events` / `kitchen.ticketCreated` |
+| `order.q` | `accounting.events` / `accounting.creditCardAuthorized`, `accounting.creditCardAuthorizationFailed` |
+| `audit.q` | `orders.events` / `order.approved`, `order.rejected`; `kitchen.events` / `kitchen.ticketRejected` |
 
-An audit queue is declared but this lab does **not** run a separate audit consumer. Consumer handler failures use `basic_nack(requeue=False)`, which routes the rejected message to that service's DLQ. These queues intentionally have no automatic retry loop: inspect the failure before manual replay.
+Each main queue has a dedicated `<queue>.dlq` (for example `accounting.q.dlq`), configured via `x-dead-letter-exchange=saga.dlx`. `saga.dlx` is **not** a fifth topic exchange; it is a shared `direct` exchange that routes rejected messages by **destination queue name**. The audit queue is declared for inspection, but has **no running consumer**. Handler errors call `basic_nack(requeue=False)` and move the affected delivery to that service's DLQ; they do not trigger automatic replay.
+
+The routing configuration is defined once in `libs/saga_common/saga_common/routing.py`. `topology.py`, the publisher and queue-binding helpers use it, so the same event always resolves to its owning exchange. Exchanges group events by domain **for clarity and separation of routing ownership**; adding exchanges alone does not automatically scale throughput or processing capacity.
 
 ## 2. Per-service databases and SQLAlchemy
 
@@ -95,7 +201,7 @@ The rejection state changes represent **simplified business compensation**. This
 
 | Mechanism | Implementation |
 |---|---|
-| Durable topic exchange `saga` and dedicated service queues | `topology.py` and shared RabbitMQ adapter |
+| Four durable context-owned topic exchanges and dedicated service queues | `routing.py`, `topology.py` and shared RabbitMQ adapter |
 | Persistent event messages (`delivery_mode=2`) | Shared outbox publisher |
 | Publisher confirms before `PENDING` -> `SENT` | Shared publisher; **at-least-once**, not exactly-once |
 | Manual `ack` only after handler returns (DB commit) | Shared `run_consumer(...)` inbound adapter |
@@ -115,7 +221,7 @@ The example isolates **bad messages** in a DLQ; it does not automatically retry 
 
 ### DLQ exercise: intentionally invalid message
 
-Start the lab, then publish a message *without* a `messageId` to the `consumer.verified` route (only Accounting receives it):
+Start the lab, then publish a message *without* a `messageId` on `consumers.events` using routing key `consumer.verified` (only Accounting receives it):
 
 ```bash
 make poison
@@ -215,7 +321,7 @@ This experiment illustrates that **outbox persistence is independent of broker a
 
 ### Migration note for an existing RabbitMQ container
 
-This version sets dead-letter arguments when the durable queues are declared. **If you already started an older version of this lab, stop it and run `make reset` before `make up`** so old queue definitions do not conflict with the new arguments. `make reset` deletes the teaching databases and broker state. Save any work before doing this. A production deployment would normally use RabbitMQ policies for configurable DLX settings.
+This version replaces the old `saga` topic exchange with four domain exchanges. After updating the code, use `make down` followed by `make up` so the topology setup recreates the bindings and publishers use the new exchange names. **Do not run `make reset` unless you intentionally want to delete the lab databases.** If replacing a much older lab version whose queues lack the DLX arguments, remove the old RabbitMQ queues/broker state first; `make reset` is a destructive shortcut. A production deployment would normally use RabbitMQ policies for configurable DLX settings.
 
 ### Cleanup
 
@@ -232,7 +338,8 @@ make reset  # deletes persisted databases and RabbitMQ data
 - `*/adapters/outbound/postgres_repository.py`: service-local SQLAlchemy transactions.
 - `*/app.py`: FastAPI/RabbitMQ inbound adapters and composition roots.
 - `libs/saga_common/saga_common/__init__.py`: shared outbox/inbox schema, polling publisher, reconnect and RabbitMQ helpers.
-- `topology.py`: topic exchange and queue bindings.
+- `libs/saga_common/saga_common/routing.py`: context-owned topic exchanges, event-to-exchange mapping and queue bindings.
+- `topology.py`: topology initialization using the shared routing map.
 - `tests/test_policies.py`: focused domain policy tests.
 
 This is a teaching example, not a production-ready payment or saga platform. It uses PostgreSQL-specific data types and SQL constructs. Production-strength poison-message retry policies, monitoring, multi-instance publisher concurrency and real external compensation require further work.

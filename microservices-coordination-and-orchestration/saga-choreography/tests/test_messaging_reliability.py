@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+# topology.py imports the same pure routing module copied into Docker's setup image.
+sys.path.insert(0, str(ROOT / 'libs/saga_common/saga_common'))
 
 
 class FakeAMQPError(Exception):
@@ -82,8 +84,12 @@ class MessagingTest(unittest.TestCase):
         # The messaging module declares metadata but does not open a DB connection.
         os.environ.setdefault('DATABASE_URL', 'sqlite:///:memory:')
         with patch.dict(sys.modules, {'pika': pika}):
-            spec = importlib.util.spec_from_file_location('saga_shared_test', ROOT / 'libs/saga_common/saga_common/__init__.py')
+            spec = importlib.util.spec_from_file_location(
+                'saga_shared_test', ROOT / 'libs/saga_common/saga_common/__init__.py',
+                submodule_search_locations=[str(ROOT / 'libs/saga_common/saga_common')]
+            )
             module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
             spec.loader.exec_module(module)
         cls.shared = module
 
@@ -103,6 +109,7 @@ class MessagingTest(unittest.TestCase):
         })
         self.assertTrue(any(x['queue'] == 'consumer.q.dlq' for x in ch.queues))
         self.assertIn({'exchange': 'saga.dlx', 'queue': 'consumer.q.dlq', 'routing_key': 'consumer.q'}, ch.bindings)
+        self.assertIn({'exchange': 'orders.events', 'queue': 'consumer.q', 'routing_key': 'order.created'}, ch.bindings)
 
     def test_ack_after_handler_and_nack_bad_message(self):
         ch = Channel()
@@ -126,12 +133,48 @@ class MessagingTest(unittest.TestCase):
         self.assertEqual(ch.nacks, [(2, False)])
         self.assertTrue(conn.closed)
 
+    def test_bounded_context_exchange_mapping(self):
+        mapping = self.shared.exchange_for_route
+        self.assertEqual(mapping('order.created'), 'orders.events')
+        self.assertEqual(mapping('consumer.verified'), 'consumers.events')
+        self.assertEqual(mapping('kitchen.ticketCreated'), 'kitchen.events')
+        self.assertEqual(mapping('accounting.creditCardAuthorized'), 'accounting.events')
+        with self.assertRaises(ValueError):
+            mapping('unknown.event')
+
+    def test_service_consumers_use_shared_binding_map(self):
+        # Prevent accidental drift between startup queue bindings and service consumers.
+        from pathlib import Path
+        for owner in ('order', 'consumer', 'kitchen', 'accounting'):
+            code = (ROOT / (owner + '_service') / 'app.py').read_text()
+            self.assertIn('QUEUE_BINDINGS', code)
+            self.assertIn('QUEUE_BINDINGS["' + owner + '.q"]', code)
+
     def test_topology_creates_five_service_dlqs(self):
         ch = Channel()
         conn = Connection(ch)
         with patch.dict(sys.modules, {'pika': pika}):
             with patch.object(pika, 'BlockingConnection', return_value=conn):
                 runpy.run_path(str(ROOT / 'topology.py'), run_name='__main__')
+        topics = {e['exchange']: e['exchange_type'] for e in ch.exchanges}
+        self.assertEqual(
+            {name for name, kind in topics.items() if kind == 'topic'},
+            {'orders.events', 'consumers.events', 'kitchen.events', 'accounting.events'}
+        )
+        self.assertEqual(topics['saga.dlx'], 'direct')
+        expected_cross_service = {
+            ('orders.events', 'consumer.q', 'order.created'),
+            ('orders.events', 'kitchen.q', 'order.created'),
+            ('orders.events', 'accounting.q', 'order.created'),
+            ('consumers.events', 'accounting.q', 'consumer.verified'),
+            ('consumers.events', 'accounting.q', 'consumer.verificationFailed'),
+            ('kitchen.events', 'accounting.q', 'kitchen.ticketCreated'),
+            ('accounting.events', 'kitchen.q', 'accounting.creditCardAuthorized'),
+            ('accounting.events', 'order.q', 'accounting.creditCardAuthorizationFailed'),
+            ('kitchen.events', 'audit.q', 'kitchen.ticketRejected'),
+        }
+        actual = {(b['exchange'], b['queue'], b['routing_key']) for b in ch.bindings}
+        self.assertTrue(expected_cross_service <= actual)
         primaries = [q for q in ch.queues if not q['queue'].endswith('.dlq')]
         dead = [q for q in ch.queues if q['queue'].endswith('.dlq')]
         self.assertEqual(len(primaries), 5)

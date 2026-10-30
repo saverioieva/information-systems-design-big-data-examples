@@ -87,7 +87,6 @@ services:
       SERVICE_NAME: order_service
       AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
       DATABASE_URL: postgresql+psycopg2://app:pass@postgres_order:5432/orderdb
-      EXCHANGE: saga
       PORT: '8000'
       LOG_LEVEL: INFO
       AMQP_HEARTBEAT: '120'
@@ -115,7 +114,6 @@ services:
       LOG_LEVEL: INFO
       AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
       DATABASE_URL: postgresql+psycopg2://app:pass@postgres_consumer:5432/consumerdb
-      EXCHANGE: saga
       AMQP_HEARTBEAT: '120'
       AMQP_BLOCKED_TIMEOUT: '300'
       AMQP_SOCKET_TIMEOUT: '180'
@@ -139,7 +137,6 @@ services:
       LOG_LEVEL: INFO
       AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
       DATABASE_URL: postgresql+psycopg2://app:pass@postgres_kitchen:5432/kitchendb
-      EXCHANGE: saga
       AMQP_HEARTBEAT: '120'
       AMQP_BLOCKED_TIMEOUT: '300'
       AMQP_SOCKET_TIMEOUT: '180'
@@ -163,7 +160,6 @@ services:
       LOG_LEVEL: INFO
       AMQP_URL: amqp://student:student@rabbitmq:5672/%2F
       DATABASE_URL: postgresql+psycopg2://app:pass@postgres_accounting:5432/accountingdb
-      EXCHANGE: saga
       AUTHORIZE_OK: 'true'
       AMQP_HEARTBEAT: '120'
       AMQP_BLOCKED_TIMEOUT: '300'

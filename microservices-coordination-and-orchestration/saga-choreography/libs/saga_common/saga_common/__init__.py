@@ -1,5 +1,6 @@
 import os, json, uuid, time, logging
 import pika
+from .routing import TOPIC_EXCHANGES, exchange_for_route
 from sqlalchemy import create_engine, MetaData, Table, Column, String, DateTime, select, insert, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
@@ -11,7 +12,6 @@ log = logging.getLogger("saga")
 
 # ---------------- AMQP config ----------------
 AMQP_URL   = os.getenv("AMQP_URL", "amqp://guest:guest@rabbitmq:5672/%2F")
-EXCHANGE   = os.getenv("EXCHANGE", "saga")
 DLX        = os.getenv("DLX", "saga.dlx")
 
 HEARTBEAT  = int(os.getenv("AMQP_HEARTBEAT", "120"))
@@ -70,7 +70,8 @@ def _connect():
     conn = pika.BlockingConnection(params)
     try:
         ch = conn.channel()
-        ch.exchange_declare(exchange=EXCHANGE, exchange_type="topic", durable=True)
+        for topic_exchange in TOPIC_EXCHANGES.values():
+            ch.exchange_declare(exchange=topic_exchange, exchange_type="topic", durable=True)
         ch.exchange_declare(exchange=DLX, exchange_type="direct", durable=True)
         return conn, ch
     except Exception:
@@ -103,7 +104,7 @@ def declare_and_bind(ch, queue, keys):
     ch.queue_bind(exchange=DLX, queue=queue + ".dlq", routing_key=queue)
     q = ch.queue_declare(queue=queue, durable=True, arguments=queue_args(queue)).method.queue
     for rk in keys:
-        ch.queue_bind(exchange=EXCHANGE, queue=q, routing_key=rk)
+        ch.queue_bind(exchange=exchange_for_route(rk), queue=q, routing_key=rk)
     return q
 
 
@@ -204,7 +205,7 @@ def publish_outbox_forever():
                     continue
                 oid, topic, payload = rows[0]
                 ch.basic_publish(
-                    exchange=EXCHANGE, routing_key=topic, mandatory=True,
+                    exchange=exchange_for_route(topic), routing_key=topic, mandatory=True,
                     properties=pika.BasicProperties(
                         content_type="application/json", delivery_mode=2,
                         message_id=payload.get("messageId"),

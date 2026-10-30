@@ -5,6 +5,7 @@ import uvicorn
 from fastapi import FastAPI,HTTPException
 from pydantic import BaseModel
 from saga_common import publish_outbox_forever,run_consumer,flow
+from saga_common.routing import QUEUE_BINDINGS
 from application.use_cases import OrderUseCases
 from adapters.outbound.postgres_repository import PostgresOrderRepository
 
@@ -34,7 +35,7 @@ def health():return {'status':'ok'}
 def consume():
     def handler(event, properties, route):
         service.accounting_result(event, route, properties)
-    run_consumer("order_service", "order.q", ['accounting.creditCardAuthorized', 'accounting.creditCardAuthorizationFailed'], handler)
+    run_consumer("order_service", "order.q", QUEUE_BINDINGS["order.q"], handler)
 
 
 if __name__ == '__main__':

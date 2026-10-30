@@ -4,23 +4,60 @@ A small **Create Order Saga** written in Python with **hexagonal architecture**.
 
 The architecture is intentionally implemented **without Temporal**: students can inspect every transition and every compensation. There are four logical services—Order, Consumer, Kitchen, Accounting. The **Order Command Handler** and the **Saga Coordinator** run inside the *same Order Service* (same PostgreSQL `order_db` database), not as an additional microservice.
 
-## 1. Architecture and files
+## 1. Architecture overview and files
 
-```text
-Client --POST /orders--> Order Service (FastAPI)
-                          |-- SagaCoordinator
-                          |     |-- SagaStateMachine
-                          |     |-- PostgreSQL order_db (orders, sagas, saga_history, inbox, outbox)
-                          |     '-- reply.orchestrator <--- RabbitMQ
-                          '-- Order Command Handler <--- command.order
-                                                       (same PostgreSQL order_db)
+The **Order Service** contains the REST API, `SagaCoordinator`, `SagaStateMachine`, and **Order Command Handler**. These are components of the same logical service (although the command handler runs as a separate worker process), and they share its **own** PostgreSQL `order_db`. Consumer, Kitchen and Accounting are independent services, each with its own PostgreSQL instance.
 
-Consumer Service <----- command.consumer ----- RabbitMQ    (postgres_consumer / consumer_db)
-Kitchen Service  <----- command.kitchen  ----- RabbitMQ    (postgres_kitchen / kitchen_db)
-Accounting       <----- command.accounting --- RabbitMQ    (postgres_accounting / accounting_db)
+```mermaid
+flowchart TB
+    Client["Client"] -->|"POST /orders"| API
 
-All participants send their results to reply.orchestrator through their local outbox.
+    subgraph OrderContext["Order Service / bounded context"]
+        direction TB
+        API["Order API<br/>FastAPI"]
+        Coordinator["SagaCoordinator"]
+        StateMachine["SagaStateMachine<br/>pure domain logic"]
+        OrderHandler["Order Command Handler"]
+        OrderDB[("postgres_order<br/>order_db")]
+        API --> Coordinator
+        Coordinator --> StateMachine
+        Coordinator -->|"state, history and outbox"| OrderDB
+        OrderHandler -->|"local transactions and outbox"| OrderDB
+    end
+
+    Broker["RabbitMQ<br/>commands and replies"]
+
+    subgraph ConsumerContext["Consumer bounded context"]
+        Consumer["Consumer Service"]
+        ConsumerDB[("postgres_consumer<br/>consumer_db")]
+        Consumer --> ConsumerDB
+    end
+
+    subgraph KitchenContext["Kitchen bounded context"]
+        Kitchen["Kitchen Service"]
+        KitchenDB[("postgres_kitchen<br/>kitchen_db")]
+        Kitchen --> KitchenDB
+    end
+
+    subgraph AccountingContext["Accounting bounded context"]
+        Accounting["Accounting Service"]
+        AccountingDB[("postgres_accounting<br/>accounting_db")]
+        Accounting --> AccountingDB
+    end
+
+    Coordinator -->|"commands via local outbox"| Broker
+    Broker -->|"reply.orchestrator"| Coordinator
+    Broker -->|"command.order"| OrderHandler
+    Broker -->|"command.consumer"| Consumer
+    Broker -->|"command.kitchen"| Kitchen
+    Broker -->|"command.accounting"| Accounting
+    OrderHandler -->|"reply via local outbox"| Broker
+    Consumer -->|"reply via local outbox"| Broker
+    Kitchen -->|"reply via local outbox"| Broker
+    Accounting -->|"reply via local outbox"| Broker
 ```
+
+**Read this as a logical architecture diagram:** arrows to RabbitMQ represent messages published by each service's **Outbox publisher**, and arrows from RabbitMQ represent delivery to AMQP consumers. The Order Command Handler and Saga Coordinator are **not separate microservices**. The next diagram describes the actual exchange, queues, connections/channels and delayed-retry routing.
 
 | Module | Responsibility |
 |---|---|
@@ -36,6 +73,57 @@ All participants send their results to reply.orchestrator through their local ou
 | `app/main.py` | FastAPI and dependency composition |
 
 This demo uses **four independent PostgreSQL containers**, one per service: `postgres_order` (`order_db`), `postgres_consumer` (`consumer_db`), `postgres_kitchen` (`kitchen_db`), and `postgres_accounting` (`accounting_db`). Each instance has its own persistent Docker volume and database lifecycle. There are no cross-service joins or distributed SQL transactions. The Order Service runs both the `SagaCoordinator` and the Order Command Handler against its **own** `order_db` (not a fifth microservice). An external payment is *not* charged: `AuthorizeCard` is a simulated business decision (`amount <= 100` succeeds). The original saga has a **semantic lock**: new orders stay `APPROVAL_PENDING` until the saga concludes.
+
+### RabbitMQ connections, channels, and routing
+
+`app/topology.py` declares one durable **topic exchange**, `saga.transport`. The same exchange carries commands, participant replies and controlled retry messages; **routing keys select queues**, not AMQP channels. Each Pika consumer or Outbox publisher uses a separate `BlockingConnection` and an AMQP channel. The topology initializer opens a temporary connection/channel to declare bindings.
+
+```mermaid
+flowchart LR
+    subgraph Order["Order Service: Coordinator + Order Handler"]
+        direction TB
+        OP["Outbox publisher<br/>connection + channel"]
+        OC["Saga reply consumer<br/>connection + channel"]
+        OH["Order command consumer<br/>connection + channel"]
+    end
+    subgraph Participants["Each other service: Consumer, Kitchen, Accounting"]
+        direction TB
+        PP["Outbox publisher<br/>connection + channel"]
+        PC["Command consumer<br/>connection + channel"]
+    end
+    subgraph Broker["RabbitMQ"]
+        direction TB
+        X["saga.transport<br/>topic exchange"]
+        CQ["saga.consumer / saga.kitchen / saga.accounting<br/>command queues"]
+        OQ["saga.order<br/>order command queue"]
+        RQ["saga.orchestrator<br/>reply queue"]
+        TQ["saga.retry.kitchen / saga.retry.order<br/>2 s TTL queues"]
+    end
+    OP -->|"publish commands"| X
+    PP -->|"publish replies or retries"| X
+    X -->|"command.consumer / kitchen / accounting"| CQ
+    X -->|"command.order"| OQ
+    X -->|"reply.orchestrator"| RQ
+    X -->|"retry.command.kitchen / order"| TQ
+    CQ --> PC
+    OQ --> OH
+    RQ --> OC
+    TQ -.->|"TTL expiry: dead-letter back as command.*"| X
+```
+
+**Actual queue bindings** from `app/topology.py`:
+
+| Queue | Exchange | Binding routing key | Consumer / purpose |
+|---|---|---|---|
+| `saga.orchestrator` | `saga.transport` (topic) | `reply.orchestrator` | Order Service's Saga Coordinator |
+| `saga.order` | `saga.transport` (topic) | `command.order` | Order Service's Order Command Handler |
+| `saga.consumer` | `saga.transport` (topic) | `command.consumer` | Consumer Service |
+| `saga.kitchen` | `saga.transport` (topic) | `command.kitchen` | Kitchen Service |
+| `saga.accounting` | `saga.transport` (topic) | `command.accounting` | Accounting Service |
+| `saga.retry.kitchen` | `saga.transport` (topic) | `retry.command.kitchen` | 2-second delay, then dead-letter to `command.kitchen` |
+| `saga.retry.order` | `saga.transport` (topic) | `retry.command.order` | 2-second delay, then dead-letter to `command.order` |
+
+**Per-service channel count in this demo:** Order Service opens **three** long-lived AMQP connection/channel pairs (one publisher, two consumers); each other service opens **two** (one publisher, one consumer). These are runtime connections, not extra microservices. A channel can publish multiple kinds of commands or replies. There is **no separate DLQ for unexpected failures** in this lab: the two `saga.retry.*` queues are delay queues whose TTL and dead-letter routing implement the controlled post-pivot retry. See the retry section below for failure semantics.
 
 ## 2. State machine: compare with the slide
 
