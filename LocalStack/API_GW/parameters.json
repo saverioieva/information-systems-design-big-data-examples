@@ -1,0 +1,4 @@
+{
+	"method.request.querystring.name": true,
+	"method.request.querystring.surname": true
+}
