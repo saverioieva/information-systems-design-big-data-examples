@@ -55,9 +55,10 @@ services:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-ec"]
-    command: |
-      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic orders.integration --partitions 3 --replication-factor 1
-      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic cdc_orders.public.orders --partitions 3 --replication-factor 1
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic orders.integration --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic cdc_orders.public.orders --partitions 3 --replication-factor 1
     restart: "no"
   connect:
     image: quay.io/debezium/connect:3.3
