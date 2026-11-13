@@ -15,8 +15,8 @@ set of architectural concepts and includes instructions for local experimentatio
 | [`cloud-native-examples/`](cloud-native-examples/) | Docker fundamentals, Twelve-Factor principles, deployment strategies, service models, and monitoring |
 | [`cloud-native-principles-examples/`](cloud-native-principles-examples/) | API-first, consumer-first design, persistence, failure isolation, single-concern containers, high observability, container constraints, cohesion/coupling levels, and SOLID principles |
 | [`microservices-architecture/`](microservices-architecture/) | Microservice decomposition and service-boundary design; DDD; API evolution and versioning; synchronous REST RPI; Hexagonal Architecture; FastAPI/PostgreSQL adapters; OpenAPI/Swagger tooling; gRPC, Protocol Buffers, code generation, and RPC interaction models |
-| [`microservices-coordination-and-orchestration/`](microservices-coordination-and-orchestration/) | Chapter 4: Hexagonal microservices with asynchronous request processing, Transactional Outbox (Python Polling Publisher and Python WAL Tailing → RabbitMQ), Saga choreography/orchestration and isolation |
-| [`event-driven-architecture/`](event-driven-architecture/) | Chapter 5: DDD Aggregates and Domain Events, Kafka fundamentals, PostgreSQL WAL CDC with Debezium, Kafka-to-RabbitMQ integration, and an idempotent Audit consumer |
+| [`microservices-coordination-and-orchestration/`](microservices-coordination-and-orchestration/) | Chapter 4: Hexagonal microservices with asynchronous request processing, Transactional Outbox (Python Polling Publisher and Python WAL Tailing → RabbitMQ), Saga choreography/orchestration and isolation, and DDD aggregates |
+| [`event-driven-architecture/`](event-driven-architecture/) | Chapter 5: Apache Kafka fundamentals (topics, partitions, consumer groups, offsets and replay), PostgreSQL CDC with Debezium, and Kafka–RabbitMQ integration |
 
 Additional examples may be added as the course progresses.
 

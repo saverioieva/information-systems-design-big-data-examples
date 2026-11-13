@@ -2,41 +2,46 @@
 
 Hands-on examples for **Microservices Coordination and Orchestration**, Chapter 4 of the **Information Systems Design and Big Data** course (Polytechnic University of Bari).
 
-The labs follow the progression of the slides: asynchronous request processing, transactional messaging, outbox relay strategies, distributed Sagas and DDD aggregates. Every lab has its own README and can be run **independently**; it is not one big distributed application. **The runnable services use a lightweight Hexagonal (Ports & Adapters) architecture**, building on the previous course block.
+The labs follow the progression of the slides: asynchronous request processing, transactional messaging, Outbox relay strategies, distributed Sagas, isolation between concurrent Sagas, and DDD Aggregates with Domain Events. Every lab has its own README and can be run **independently**; this is not one large distributed application. Runnable services use a lightweight **Hexagonal (Ports & Adapters) architecture**, building on the previous course block.
 
 ## Recommended lab sequence
 
 | # | Directory | Main architectural concept |
 |---|---|---|
-| 0 | [`asynchronous-request-processing/`](asynchronous-request-processing/) | REST `202 Accepted`, validations continuing asynchronously via RabbitMQ; motivation for reliable publishing |
+| 0 | [`asynchronous-request-processing/`](asynchronous-request-processing/) | REST `202 Accepted`, validation continuing asynchronously via RabbitMQ; motivation for reliable publishing |
 | 1 | [`transactional-outbox/polling-publisher/`](transactional-outbox/polling-publisher/) | Transactional Outbox with a **Polling Publisher** (PostgreSQL + Python SQL relay + RabbitMQ) |
-| 2 | [`transactional-outbox/transaction-log-tailing/`](transactional-outbox/transaction-log-tailing/) | The **same Outbox Pattern**, using PostgreSQL **WAL** + **Python psycopg2/wal2json** + **RabbitMQ** (no Debezium or Kafka) |
-| 3 | [`saga-choreography/`](saga-choreography/) | Distributed Saga, local transactions, compensation, decentralized event reactions; Adminer and per-service RabbitMQ DLQs |
-| 4 | [`saga-orchestration/`](saga-orchestration/) | Explicit `SagaCoordinator` / `SagaStateMachine`, commands and replies, compensation, PostgreSQL state/history with Adminer, delayed retriable actions and idempotence |
-| 5 | [`saga-isolation/`](saga-isolation/) | Lost updates, interleavings, semantic locks, reread/version techniques |
-| 6 | [`ddd-aggregates/`](ddd-aggregates/) | Aggregate roots, invariants, repositories, domain events; **no Event Sourcing** |
+| 2 | [`transactional-outbox/transaction-log-tailing/`](transactional-outbox/transaction-log-tailing/) | The **same Outbox Pattern**, using PostgreSQL **WAL** + **Python `psycopg2`/`wal2json`** + **RabbitMQ** (no Debezium or Kafka) |
+| 3 | [`saga-choreography/`](saga-choreography/) | Distributed Saga, local transactions, compensations and decentralized event reactions; per-service PostgreSQL, bounded-context topic exchanges and DLQs |
+| 4 | [`saga-orchestration/`](saga-orchestration/) | Explicit `SagaCoordinator` / `SagaStateMachine`, commands and replies, compensations, PostgreSQL state/history, delayed retries and idempotence |
+| 5 | [`saga-isolation/`](saga-isolation/) | **Two competing Sagas (`CreateOrder` and `CancelOrder`)** using RabbitMQ and four real PostgreSQL instances; deterministic unsafe interleaving, semantic lock and optimistic locking |
+| 6 | [`ddd-aggregates/`](ddd-aggregates/) | `Order` Aggregate Root, invariants, repository/Unit of Work, optimistic locking, Domain Events, and atomic persistence of the Order plus an Integration Event intent; **no Event Sourcing** |
 
 ## Key architectural distinctions
 
-- **CAP and asynchronous processing:** CAP concerns consistency vs availability during a partition. Async messaging reduces temporal coupling, but does not eliminate failures or make a distributed operation atomic.
-- **Outbox:** `orders` stores current business state. The outbox stores outgoing publication intentions in the same local database transaction; it is **not** an event-sourced history.
-- **Two relay mechanisms:** *Polling Publisher* queries `PENDING` outbox rows and marks them sent after broker confirmation. *Transaction Log Tailing* uses a Python `psycopg2` replication client and PostgreSQL `wal2json` to read committed outbox inserts from the WAL and publish to RabbitMQ. Both can deliver duplicates and need idempotent consumers. Both provide **Adminer on port 8082** for inspecting the database and contrasting table-based status with WAL offset tracking.
-- **CDC vs Event Sourcing:** Log tailing uses CDC internally, but is not Event Sourcing. CDC for general data replication and streaming is explored in Chapter 5.
-- **Saga vs aggregate:** A Saga coordinates local transactions across services, whereas an aggregate enforces invariants inside one service/transaction boundary.
-- **Orchestration lab:** Implements an explicit coordinator in Python, without a third-party workflow framework.
+- **CAP and asynchronous processing:** CAP concerns consistency versus availability during a network partition. Async messaging reduces temporal coupling but does not eliminate failures or make a distributed business operation atomic.
+- **Outbox:** `orders` holds current business state. The Outbox stores outgoing publication intentions in the **same local database transaction**; it is **not** an event-sourced history.
+- **Two relay mechanisms:** *Polling Publisher* queries `PENDING` Outbox rows and marks them sent after broker confirmation. *Transaction Log Tailing* uses a Python `psycopg2` replication client and PostgreSQL `wal2json` to read committed Outbox inserts from the WAL and publish to RabbitMQ. Both can deliver duplicates and require idempotent consumers. Both expose **Adminer on port 8082** to inspect the databases and compare table-based status with WAL offset tracking.
+- **CDC versus Event Sourcing:** Log tailing uses Change Data Capture internally, but it is not Event Sourcing. General-purpose CDC, Debezium and Kafka are explored in Chapter 5.
+- **Local ACID versus Saga isolation:** Each service can commit a correct ACID transaction while the overall business workflow remains vulnerable to interference from another Saga. Semantic locks, guarded state transitions and optimistic version checks address this at the application level; increasing SQL isolation alone does not make a Saga globally isolated.
+- **DDD Aggregate versus Saga:** An Aggregate Root enforces local invariants and changes its own state in one ACID transaction. A Saga coordinates steps across independent service-owned transactions.
+- **Domain Event versus Integration Event:** `OrderCreated` / `OrderApproved` describe facts raised by the Order model; the application layer may select a transport-facing Integration Event. The DDD lab persists a publication intent but does **not** run its own relay.
+- **Orchestration lab:** Implements an explicit coordinator in Python without a third-party workflow framework.
+- **Isolation lab:** Extends the same architecture with a *separate* `CancelOrder` workflow. The intentionally incorrect `unsafe` mode is enabled only for the demonstration; it is not the default approval policy.
 
 ## Messaging reliability: what each lab demonstrates
 
-- **Outbox (both relays):** atomic business-data and outbox writes, publisher confirms, and possible duplicate deliveries; the polling relay records `SENT`, while log tailing advances a PostgreSQL replication offset.
-- **Saga Choreography:** durable queues, manual ACK, inbox deduplication and **per-service DLQs**. Rejected messages are quarantined, **not automatically retried**; AMQP reconnect backoff is a separate mechanism.
-- **Saga Orchestration:** durable command/reply messaging, transition history, and **controlled post-pivot retries** through 2-second TTL queues. Those queues return commands for another attempt; they are **not final DLQs**. Unexpected handler errors are not covered by a full poison-message strategy in this teaching implementation.
-- **Adminer:** inspect database state and technical tables in the PostgreSQL-backed examples; Saga Choreography and Saga Orchestration expose four isolated service databases.
+- **Outbox (both relays):** Atomic business-data and Outbox writes, publisher confirms, and possible duplicate deliveries; the polling relay records `SENT`, whereas log tailing advances a PostgreSQL replication offset.
+- **Saga Choreography:** Durable queues, manual ACK, Inbox deduplication, **four topic exchanges (one per bounded context)** and **per-service DLQs**. Rejected messages are quarantined, **not automatically retried**; AMQP reconnect backoff is a separate mechanism.
+- **Saga Orchestration:** Durable command/reply messaging, transition history, and **controlled post-pivot retries** through 2-second TTL queues. These queues return commands for another attempt; they are **not terminal DLQs**. Unexpected handler errors are not covered by a complete poison-message recovery strategy.
+- **Saga Isolation:** Uses the same durable commands/replies, local Outbox/Inbox and idempotent participants as Orchestration. An `ApproveOrder` message is **held in the persisted Outbox** until the demo explicitly releases it; the other messages continue flowing. This provides a repeatable interleaving without keeping PostgreSQL transactions open. `CancelOrder` invokes `VoidAuthorization` in Accounting and `RejectTicket` in Kitchen before the Order Service records `CANCELLED`.
+- **DDD Aggregates:** Shows immutable Domain Events raised by the domain, the current-state `orders` and `order_line_items` tables, and an `integration_outbox` committed atomically with a state change. No event store, Kafka consumer or broker publisher is implemented in this lab.
+- **Adminer:** Inspect local business state and technical tables in the PostgreSQL-backed examples. Choreography, Orchestration and Isolation use **four service-owned PostgreSQL instances**, not a shared application database.
 
-See the individual README files for the exact commands, expected state changes and known limitations.
+See each lab's README for exact commands, expected state changes, transaction boundaries and known limitations.
 
 ## Getting started
 
-Clone the repository and choose **one** lab:
+Clone the repository and select **one** lab:
 
 ```bash
 git clone https://github.com/saverioieva/information-systems-design-big-data-examples.git
@@ -50,38 +55,78 @@ make wal
 make down
 ```
 
-For the polling alternative, use `cd transactional-outbox/polling-publisher` from this chapter directory and follow its README. Other examples have separate `Makefile` targets and may use different ports.
+For the polling alternative, return to the chapter directory and enter `transactional-outbox/polling-publisher/`; follow its README for the available Makefile commands. Other labs use their own Compose stacks and may expose overlapping host ports.
 
-Most containerized examples require Docker Compose, `make`, and `curl`. Some labs have optional local Python unit tests. **Run one lab at a time:** several independently defined stacks use RabbitMQ management port `15672` or other shared host ports.
+### Saga Isolation: competing workflows
+
+From the chapter directory:
+
+```bash
+cd saga-isolation
+make up
+make status
+make unsafe      # CANCELLED is incorrectly overwritten by APPROVED
+make semantic    # Concurrent cancellation is refused (409); retry after approval
+make optimistic  # Version/state guard prevents the stale approval
+make logs
+make down
+```
+
+Each scenario creates a **fresh order** and waits for an explicit, persistent pause before releasing the held approval. The demo does not depend on random timing or `sleep()`-based race conditions. Inspect the order and compensation states in Adminer at `http://localhost:8082` (for example, `postgres_order` / `order_db`, user `demo`, password `demo`). See [`saga-isolation/README.md`](saga-isolation/README.md) for the full workflow and SQL inspection queries.
+
+### DDD Aggregates and Domain Events: after the DDD slides
+
+From the chapter directory:
+
+```bash
+cd ddd-aggregates
+make up
+make create      # returns an order ID, with OrderCreated recorded locally
+make events      # show integration_outbox publication intents
+make db          # inspect outbox entries in PostgreSQL
+make approve ORDER_ID=<id> VERSION=1
+make events      # now also shows OrderApproved
+make down
+```
+
+Use this lab after **"Generating and Publishing Domain Events"** in the Chapter 4 slides. Inspect the API at `http://localhost:8003/docs` and the database in Adminer at `http://localhost:8083`. The Aggregate validates business rules; the application service saves the current Order and the selected Outbox event intent in one local transaction. This lab **does not implement Event Sourcing** or publish to Kafka/RabbitMQ; the Chapter 4 Outbox labs already explain the actual relay.
+
+Most containerized examples require Docker Compose, `make`, and `curl`; the Isolation demo additionally uses **Python 3 (standard library)** on the host. Some labs provide optional local Python tests. **Run one lab at a time:** independent stacks may reuse RabbitMQ management ports, Adminer port `8082`, or the Order API port `8001`.
 
 ## What to observe
 
-1. Locate the local database transaction boundary and identify who owns the business state.
-2. Trace outgoing messages and determine what happens if the broker/consumer is unavailable.
-3. Observe a successful flow, then experiment with a restart or simulated failure where supported.
-4. Read the lab's limitations and compare the architectural alternatives before cleanup.
+1. Identify each service's local transaction boundary and the database that owns its business data.
+2. Trace outgoing messages and ask what happens if the broker, relay, or consumer is temporarily unavailable.
+3. Observe the successful flow, then use the supported failure, retry, compensation or DLQ scenarios.
+4. In **Saga Isolation**, compare the same two business workflows under `unsafe`, `semantic` and `optimistic`: **local ACID still holds**, but the final cross-service outcome changes.
+5. In **DDD Aggregates**, compare `Order.create()` / `Order.approve()`, the resulting Domain Events, and the current-state SQL rows; verify that invalid transitions and stale versions are rejected.
+6. Read the limitations and compare architectural alternatives before cleaning up.
 
 ```bash
 docker compose ps
 docker compose logs
-docker compose down        # preserve volumes
-docker compose down -v     # WARNING: deletes local lab state
+docker compose down       # preserve volumes
+docker compose down -v    # WARNING: deletes local lab data
 ```
 
 ## Scope and verification
 
-These are teaching exercises, **not production-ready templates**. They use local demonstration credentials and simplified recovery/observability. The accompanying code and configuration have static validation and selected unit tests; an actual Docker end-to-end run should be performed on the target machine before a classroom demonstration.
+These are teaching exercises, **not production-ready templates**. They use local demonstration credentials and simplified recovery/observability. The code and configuration have static validation and selected unit tests; perform a Docker end-to-end run on the target machine before a classroom demonstration.
+
+In particular, the Isolation lab's `unsafe` path **deliberately bypasses the normal state guard**. The incorrect final state demonstrates a business-level concurrency anomaly between separately committed Saga steps, **not a failure of PostgreSQL's ACID guarantees**. Its compensation flow models voiding a card authorization, not refunding a settled payment.
 
 ## Architecture: Domain, Application, Ports & Adapters
 
-Each runnable service separates **pure domain rules**, **application use cases**, **ports** (repository and messaging interfaces), and **inbound/outbound adapters** (HTTP, RabbitMQ, SQLite/PostgreSQL). `main.py` or `app.py` is the composition root, not the place for domain rules. The code organization is intentionally compact to keep each lab readable.
+Each runnable service separates **domain rules**, **application use cases**, **ports** (persistence and messaging interfaces), and **inbound/outbound adapters** (HTTP, RabbitMQ, SQLite/PostgreSQL). `main.py` or `app.py` acts as the composition root rather than a place for domain rules. The organization remains intentionally compact for teaching.
 
-- `asynchronous-request-processing/`: OrderUseCases, SQLite port/adapter, RabbitMQ publisher, Flask HTTP adapter.
-- `transactional-outbox/polling-publisher/`: one atomic SQL adapter for order + outbox; polling relay uses an injected publisher port.
-- `transactional-outbox/transaction-log-tailing/`: same business transaction; Python logical replication adapter reads WAL using `psycopg2` + `wal2json`, publishing with `pika` to RabbitMQ.
-- `saga-choreography/`: each participant owns its database and has domain/application/ports/adapters.
-- `saga-orchestration/`: `SagaStateMachine` (pure domain logic), `SagaCoordinator` (application layer), participant command handlers, four PostgreSQL containers (one per participant) with SQLAlchemy Core adapters, Adminer, and retry/idempotence demonstrations. Run `make retry` to observe a rollback and delayed re-execution of `ApproveTicket` and `ApproveOrder`.
-- `ddd-aggregates/`: repository and unit-of-work ports isolate the aggregate from SQLAlchemy.
-- `saga-isolation/`: pure in-memory scenarios, not a network service; no artificial infrastructure adapters.
+- `asynchronous-request-processing/`: `OrderUseCases`, SQLite port/adapter, RabbitMQ publisher, Flask HTTP adapter.
+- `transactional-outbox/polling-publisher/`: One atomic SQL adapter for Order + Outbox; the polling relay uses an injected publisher port.
+- `transactional-outbox/transaction-log-tailing/`: Same local business transaction; a Python logical replication adapter reads WAL with `psycopg2` + `wal2json` and publishes via `pika` to RabbitMQ.
+- `saga-choreography/`: Each participant owns its PostgreSQL instance and implements local domain/application/ports/adapters; events route through bounded-context topic exchanges.
+- `saga-orchestration/`: `SagaStateMachine` (pure domain logic), `SagaCoordinator` (application layer), participant command handlers, **four PostgreSQL containers**, Adminer, Outbox/Inbox and retry/idempotence demonstrations. `make retry` shows a rolled-back local attempt followed by delayed retry of `ApproveTicket` and `ApproveOrder`.
+- `saga-isolation/`: A **standalone distributed project**, not the former in-memory simulation. It retains Orchestration's four services, four PostgreSQL instances and RabbitMQ, and adds `CancelOrderStateMachine`, persisted cancellation history, compensating commands, a durable Outbox approval gate and conditional SQL updates. The `demo/run_scenario.py` driver reproduces the three isolation scenarios deterministically.
 
-The design is for teaching, not an assertion of production readiness. **The outbox is not Event Sourcing**, and the PostgreSQL logical replication slot tracks persistent WAL progress.
+- `ddd-aggregates/`: `Order` Aggregate Root and immutable Domain Events in the domain layer, application service plus Repository/Unit of Work ports, FastAPI and SQLAlchemy adapters, PostgreSQL current-state and `integration_outbox` tables. No broker is required.
+
+The design is for teaching, not a claim of production readiness. **The Outbox is not Event Sourcing**, and a PostgreSQL logical replication slot tracks persistent WAL consumption progress.
+
