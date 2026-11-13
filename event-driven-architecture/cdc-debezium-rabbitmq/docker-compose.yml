@@ -1,0 +1,144 @@
+name: ch5-cdc-debezium-rabbitmq
+services:
+  postgres:
+    image: postgres:16-alpine
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=6", "-c", "max_wal_senders=6"]
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: orders
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d orders"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  adminer:
+    image: adminer:4
+    ports:
+      - "8084:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+  kafka:
+    image: apache/kafka:4.1.1
+    hostname: kafka
+    ports:
+      - "29094:9092"
+    environment:
+      CLUSTER_ID: '4L6g3nShT-eMCtK--X86sw'
+      KAFKA_NODE_ID: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT'
+      KAFKA_LISTENERS: 'CONTROLLER://:29093,PLAINTEXT://:19092,HOST://:9092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:19092,HOST://localhost:29094'
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 35
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+  topics:
+    image: apache/kafka:4.1.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-ec"]
+    command: |
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic orders.integration --partitions 3 --replication-factor 1
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic cdc_orders.public.orders --partitions 3 --replication-factor 1
+    restart: "no"
+  connect:
+    image: quay.io/debezium/connect:3.3
+    ports:
+      - "18083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:19092
+      GROUP_ID: ch5-connect
+      CONFIG_STORAGE_TOPIC: ch5_connect_config
+      OFFSET_STORAGE_TOPIC: ch5_connect_offsets
+      STATUS_STORAGE_TOPIC: ch5_connect_status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      topics:
+        condition: service_completed_successfully
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://demo:demo@postgres:5432/orders
+    ports:
+      - "8004:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: student
+      RABBITMQ_DEFAULT_PASS: student
+    ports:
+      - "5675:5672"
+      - "15675:15672"
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - rabbit_data:/var/lib/rabbitmq
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "bridge.main"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      KAFKA_TOPIC: orders.integration
+      KAFKA_GROUP: orders-to-rabbit-bridge
+      RABBITMQ_URL: amqp://student:student@rabbitmq:5672/
+    depends_on:
+      kafka:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      topics:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  audit:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "audit.main"]
+    environment:
+      RABBITMQ_URL: amqp://student:student@rabbitmq:5672/
+      AUDIT_DB_PATH: /audit_data/audit.sqlite3
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - audit_data:/audit_data
+    restart: unless-stopped
+volumes:
+  pg_data:
+  kafka_data:
+  rabbit_data:
+  audit_data:

@@ -2,6 +2,7 @@
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -18,7 +19,6 @@ DATABASE_URL = os.environ['DATABASE_URL']
 store = PostgresSagaStore(ROLE, DATABASE_URL)
 coordinator = SagaCoordinator(store) if ROLE == 'orchestrator' else None
 participant = SagaParticipantHandler(store, ROLE) if ROLE != 'orchestrator' else None
-app = FastAPI(title='Create Order Saga — State Machine and Hexagonal Architecture')
 
 
 def relay_loop():
@@ -64,9 +64,17 @@ class NewOrder(BaseModel):
     simulateTicketFailure: bool = False
 
 
-@app.on_event('startup')
-def on_start():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize the local database and start the RabbitMQ consumers/outbox relay.
     start_components()
+    yield
+
+
+app = FastAPI(
+    title='Create Order Saga — State Machine and Hexagonal Architecture',
+    lifespan=lifespan,
+)
 
 
 @app.post('/orders', status_code=202)

@@ -1,0 +1,23 @@
+{
+  "name": "orders-raw",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "demo",
+    "database.password": "demo",
+    "database.dbname": "orders",
+    "plugin.name": "pgoutput",
+    "publication.autocreate.mode": "disabled",
+    "snapshot.mode": "initial",
+    "topic.prefix": "cdc_orders",
+    "slot.name": "raw_orders_slot",
+    "publication.name": "raw_orders_publication",
+    "table.include.list": "public.orders",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
+}

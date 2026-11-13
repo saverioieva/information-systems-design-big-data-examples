@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+WORKDIR /lab
+COPY requirements-worker.txt .
+RUN pip install --no-cache-dir -r requirements-worker.txt
+COPY bridge ./bridge
+COPY audit ./audit
+CMD ["python", "-m", "bridge.main"]
