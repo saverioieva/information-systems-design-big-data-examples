@@ -104,21 +104,25 @@ class SagaCoordinator:
                 raise DomainConflict(f'Order status {row["status"]} cannot be cancelled')
             if tx.get_cancel_stage(order_id) is not None:
                 raise DomainConflict('Cancellation already requested')
-            tx.start_cancellation(order_id)
-            # Pessimistic View: commit a protective state BEFORE external effects.
-            # TEST-ONLY: hold the compensating command to observe that ordering.
-            hold_cancel = row['isolationMode'] == 'pessimistic'
-            if hold_cancel:
-                tx.pause_cancellation(order_id)
-            tx.enqueue('command.accounting', order_id, action='VoidAuthorization',
-                       sagaType='cancel', _hold=hold_cancel)
+            pessimistic = row['isolationMode'] == 'pessimistic'
+            first_stage = 'REJECT_TICKET_PIVOT' if pessimistic else 'VOID_AUTHORIZATION'
+            first_route = 'command.kitchen' if pessimistic else 'command.accounting'
+            first_command = 'RejectTicket' if pessimistic else 'VoidAuthorization'
+            tx.start_cancellation(order_id, initial_stage=first_stage)
+            # Commit the pending state and the initial command in the same local
+            # transaction. The Kitchen pivot must succeed before CANCELLED or
+            # the final credit release is scheduled.
+            tx.enqueue(first_route, order_id, action=first_command, sagaType='cancel')
             tx.record_cancel_transition(order_id, None, 'CancelRequested',
-                                        'VOID_AUTHORIZATION', 'VoidAuthorization')
-        print(f'[isolation] saga={order_id} CANCEL START -> VOID_AUTHORIZATION', flush=True)
+                                        first_stage, first_command)
+        print(f'[isolation] saga={order_id} CANCEL START -> {first_stage}', flush=True)
         return {'orderId': order_id, 'status': 'CANCELLATION_PENDING',
-                'cancelStage': 'VOID_AUTHORIZATION'}
+                'cancelStage': first_stage}
 
     def handle_message(self, message: dict) -> None:
+        if message.get('countermeasureType'):
+            self.countermeasures.handle_message(message)
+            return
         with self.store.transaction() as tx:
             mid = message['messageId']
             if tx.seen(mid):
@@ -132,10 +136,24 @@ class SagaCoordinator:
                     tx.record_cancel_transition(order_id, current, reply,
                                                 transition.stage, transition.command)
                     if transition.route:
-                        tx.enqueue(transition.route, order_id, action=transition.command,
-                                   sagaType='cancel')
+                        command_data = {'action': transition.command, 'sagaType': 'cancel'}
+                        if transition.command == 'SetCancelled':
+                            # Post-pivot operation: transient failure is retried
+                            # through the durable Order retry Outbox / TTL queue.
+                            command_data.update(retryDemo=True, attempt=0)
+                        if current == 'SET_CANCELLED' and transition.command == 'VoidAuthorization':
+                            # Pessimistic View: CANCELLED is already committed;
+                            # hold only the final credit release for observation.
+                            tx.pause_cancellation(order_id)  # test-only gate
+                            command_data.update(retryDemo=True, attempt=0, _hold=True)
+                        tx.enqueue(transition.route, order_id, **command_data)
                     else:
-                        tx.finish_cancellation(order_id)
+                        if tx.isolation_mode(order_id) == 'pessimistic':
+                            # Already committed by SetCancelled after the pivot.
+                            if tx.get_order_locked(order_id)['status'] != 'CANCELLED':
+                                raise ValueError('Post-pivot CANCELLED transition missing')
+                        else:
+                            tx.finish_cancellation(order_id)
                     print(f'[flow] CANCEL saga={order_id} {current} --{reply}--> {transition.stage}', flush=True)
                 else:
                     print(f'[flow] CANCEL saga={order_id} ignoring unexpected reply {reply} in {current}', flush=True)

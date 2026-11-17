@@ -1,4 +1,4 @@
-"""Fast tests for the two *separate* persisted countermeasure examples."""
+"""Unit tests for Accounting credit and Kitchen Version File domain operations."""
 import unittest
 from fake_store import FakeSagaStore
 from app.domain.isolation_policy import RISK_THRESHOLD, select_isolation_mode
@@ -22,15 +22,15 @@ class CountermeasureLabsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Conflicting duplicate'):
                 tx.adjust_credit('a', 'a-credit', 26)
 
-    def test_commutative_script_runs_with_storage_port(self):
-        from app.demo_countermeasures import run_commutative
-        from contextlib import redirect_stdout
-        from io import StringIO
-        output = StringIO()
-        with redirect_stdout(output):
-            run_commutative(self.store)
-        self.assertIn('COMMUTATIVE: +25,-10 -> 115', output.getvalue())
-        self.assertIn('compensation -25 -> 90', output.getvalue())
+    def test_credit_operation_id_is_not_a_message_id(self):
+        # A repeated command with a *different* broker messageId must still
+        # be deduplicated by its stable business operation ID.
+        with self.store.transaction() as tx:
+            tx.initialize_credit('stable', 100)
+            self.assertEqual(tx.adjust_credit('stable', 'op-1', 25), 125)
+            self.assertEqual(tx.adjust_credit('stable', 'op-1', 25), 125)
+            with self.assertRaisesRegex(ValueError, 'Conflicting duplicate'):
+                tx.adjust_credit('stable', 'op-1', 99)
 
     def test_version_file_buffers_out_of_order_operations_and_replays_once(self):
         with self.store.transaction() as tx:

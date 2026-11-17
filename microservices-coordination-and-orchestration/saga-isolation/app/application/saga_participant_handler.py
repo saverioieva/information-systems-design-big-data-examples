@@ -7,7 +7,7 @@ Normal/semantic modes retain the guarded local transaction from Orchestration.
 from app.domain.policy import consumer_approved, card_authorized
 from app.ports.storage import SagaStore
 
-RETRIABLE_COMMANDS = {'ApproveTicket', 'ApproveOrder'}
+RETRIABLE_COMMANDS = {'ApproveTicket', 'ApproveOrder', 'SetCancelled', 'VoidAuthorization'}
 
 
 class TransientCommandFailure(Exception):
@@ -39,6 +39,9 @@ class SagaParticipantHandler:
         with self.store.transaction() as tx:
             if tx.seen(mid):
                 return
+            if message.get('countermeasureType'):
+                self._handle_countermeasure(tx, message, mid, action)
+                return
             previous = tx.completed_command(oid, action)
             if previous:
                 tx.enqueue('reply.orchestrator', oid, action=previous,
@@ -69,6 +72,9 @@ class SagaParticipantHandler:
             elif self.role == 'accounting' and action == 'VoidAuthorization':
                 tx.void_authorization(oid)
                 result = 'AuthorizationVoided'
+            elif self.role == 'order' and action == 'SetCancelled':
+                tx.set_cancelled_after_pivot(oid)
+                result = 'OrderCancelled'
             elif self.role == 'order' and action == 'ApproveOrder':
                 mode = message.get('isolationMode', 'normal')
                 if mode == 'unsafe':
@@ -96,3 +102,29 @@ class SagaParticipantHandler:
                        sagaType=message.get('sagaType', 'create'))
             tx.mark_seen(mid)
             print(f'[flow] saga={oid} {self.role} {action} attempt={attempt} -> {result}', flush=True)
+
+    def _handle_countermeasure(self, tx, message, mid, action):
+        """Saga-style participant commands: no direct SQL from the HTTP caller."""
+        kind = message['countermeasureType']
+        if self.role == 'consumer' and action == 'VerifyConsumer':
+            result = ('CountermeasureVerified' if
+                      consumer_approved(message['customerId']) else 'CountermeasureRejected')
+            detail = {}
+        elif self.role == 'accounting' and kind == 'commutative' and action == 'AdjustCredit':
+            account_id = message['accountId']
+            tx.initialize_credit(account_id, int(message['openingBalance']))
+            balance = tx.adjust_credit(account_id, message['operationId'], int(message['delta']))
+            result = 'CountermeasureCreditAdjusted'
+            detail = {'accountId': account_id, 'balance': balance, 'delta': int(message['delta'])}
+        elif self.role == 'kitchen' and kind == 'version-file' and action == 'ApplyVersioned':
+            detail = tx.apply_versioned(message['streamId'], int(message['sequence']),
+                                        message['operation'], int(message['value']))
+            result = 'CountermeasureVersionApplied'
+        else:
+            raise ValueError(f'Unsupported {kind} command {action} for {self.role}')
+        tx.enqueue('reply.orchestrator', message['orderId'], action=result,
+            countermeasureType=kind, runId=message['runId'],
+            stepId=message.get('stepId'), sagaId=message['sagaId'], **detail)
+        tx.mark_seen(mid)
+        print(f'[flow] {kind} role={self.role} saga={message["sagaId"]} '
+              f'{action} -> {result} {detail}', flush=True)

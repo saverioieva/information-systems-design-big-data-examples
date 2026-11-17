@@ -21,7 +21,7 @@ def provision():
             ch.queue_bind(exchange=EXCHANGE, queue=queue, routing_key=key)
             print(f'declared {queue} for {key}', flush=True)
 
-        for role in ('kitchen', 'order'):
+        for role in ('kitchen', 'order', 'accounting'):
             queue = f'saga.retry.{role}'
             ch.queue_declare(queue=queue, durable=True, arguments={
                 'x-message-ttl': 2000,

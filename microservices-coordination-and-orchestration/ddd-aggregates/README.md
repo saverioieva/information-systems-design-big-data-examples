@@ -1,152 +1,218 @@
 # DDD Aggregates and Domain Events — Order Service
 
-A runnable **FastAPI + PostgreSQL** service demonstrating **Domain-Driven Design (DDD)** with **Hexagonal Architecture (Ports & Adapters)**. The `Order` Aggregate Root owns its business invariants, while an application service uses a Repository and Unit of Work to commit the **current order state** and selected **outgoing integration-event intents** in one local SQL transaction.
+A runnable **FastAPI + PostgreSQL** service demonstrating Domain-Driven Design (DDD) and **Hexagonal Architecture (Ports & Adapters)**. The `Order` **Aggregate Root** is the only public entry point for changing its `OrderLine` entities and `Address` value object. Every functional operation travels through **REST API → Application Service → Aggregate Root → Repository / Unit of Work**.
 
-This example belongs to **[Chapter 4 — Microservices Coordination and Orchestration](../README.md)** of *Information Systems Design and Big Data*. It illustrates aggregate boundaries and local transactional consistency. It **does not implement Event Sourcing** or a message publisher.
+Part of **[Chapter 4 — Microservices Coordination and Orchestration](../README.md)** of *Information Systems Design and Big Data*. This project focuses on **domain modeling and aggregate boundaries**, not on comparing current-state persistence with Event Sourcing.
 
-## What it demonstrates
+## What the project demonstrates
 
-- **Aggregate Root and transaction boundary:** the `Order` root controls state transitions and access to its `OrderLineItem` children. Clients cannot directly assign `order.state` or mutate `order.line_items`.
-- **Entity and value-like objects:** `Order` has identity; immutable `OrderLineItem` objects are compared by value. `consumer_id` and `restaurant_id` reference other aggregates by **ID**, not by object reference.
-- **Factory method and invariants:** `Order.create()` requires at least one line item. Child items require positive quantities and nonnegative prices; the last item cannot be removed. Only a pending order with a positive total can be approved.
-- **Application Service, Repository, Unit of Work:** `OrderService` coordinates use cases; the aggregate owns business decisions; persistence depends on interfaces rather than SQLAlchemy internals.
-- **Domain Events and Outbox:** `OrderCreated` and `OrderApproved` are immutable domain facts. Selected events are serialized as outgoing intents in `integration_outbox`, atomically with the current-state SQL update.
-- **Optimistic concurrency:** the repository checks `version_id` when updating an aggregate and reports stale writes as HTTP `409 Conflict`.
+| DDD building block | Concrete implementation |
+|---|---|
+| **Aggregate Root** | `Order` controls all changes to lines, address, approval and cancellation. |
+| **Entity** | `OrderLine` has a stable `line_id`: it remains the same entity when quantity changes. |
+| **Value Object** | Immutable `Money(amount, currency)` and `Address` use equality by value. Money uses `Decimal`, not `float`. |
+| **Factory** | `Order.create()` constructs a valid aggregate and records `OrderCreated`. |
+| **Aggregate invariants** | At least one line, no duplicate menu items, one currency, maximum total of 200.00; approval requires an address and total of at least 15.00. |
+| **Inter-aggregate references** | `consumer_id` and `restaurant_id` are identifiers, not loaded objects. |
+| **Application Service** | `OrderService` orchestrates use cases but does not enforce business rules itself. |
+| **Repository and Unit of Work** | A local SQL transaction persists the aggregate's current state and outgoing event intents. |
+| **Domain Events** | Operations create immutable facts with event ID, aggregate ID, type and timestamp. |
 
-`OrderService` is an **application service**, not a separate DDD *domain service*. The business rules in this example belong to the `Order` Aggregate Root, so there is no need for an additional domain service.
+A separate DDD **Domain Service** is not necessary here: the business operations all belong to the `Order` aggregate. Other aggregates are not updated in this transaction; cross-service coordination would require a separate Saga.
 
-## Architecture
+## Architecture and aggregate boundary
 
 ```mermaid
-flowchart LR
-    Client[HTTP client] --> API[FastAPI inbound adapter]
-    API --> Service[OrderService]
-    Service --> Root[Order Aggregate Root]
-    Service --> UOW[Unit of Work port]
-    UOW --> Repo[Repository port]
+flowchart TB
+    Client[HTTP client] --> API[FastAPI - inbound adapter]
+    API --> Service[OrderService - application use cases]
+    Service --> Root[Order - Aggregate Root]
+    Root --> Entity[OrderLine - child entity]
+    Root --> Values[Money and Address - value objects]
+    Service --> UoW[Unit of Work port]
+    UoW --> Repo[OrderRepository port]
     Repo --> SQL[SQLAlchemy outbound adapter]
     SQL --> DB[(PostgreSQL)]
-    DB --- State[orders + order_line_items]
-    DB --- Outbox[integration_outbox]
+    DB --> State[orders and order_lines]
+    DB --> Outbox[integration_outbox]
 ```
 
-Changes to an `Order` happen through root operations such as `approve()`, `add_item_to_order()` and `remove_item_from_order()`. The `line_items` property returns an immutable tuple of immutable `OrderLineItem` objects. The application coordinates transaction boundaries, but never bypasses aggregate invariants to edit its business state.
+`Order.lines` exposes a **tuple of immutable entity snapshots**; `Order.address` is an immutable value object. Direct assignment to `order.state`, `order.address` or a line's `quantity` is rejected. To change the domain state, use root methods such as `change_line_quantity()`, `change_delivery_address()` or `approve()`. Python's underscore convention is not a security boundary; this is a modeling and application-design rule enforced by the public interface and tests.
 
-### Create an order and persist the Outbox intent
+### Successful update sequence
 
 ```mermaid
 sequenceDiagram
     participant C as HTTP Client
-    participant API as FastAPI Adapter
+    participant API as FastAPI
     participant S as OrderService
-    participant A as Order Aggregate
+    participant R as Order Root
+    participant U as Unit of Work
     participant DB as PostgreSQL
-    C->>API: POST /orders
-    API->>S: create(...)
-    S->>A: Order.create(...)
-    A-->>S: Order + OrderCreated
-    S->>DB: BEGIN transaction (Unit of Work)
-    S->>DB: INSERT orders and order_line_items
-    S->>DB: INSERT integration_outbox
-    S->>DB: COMMIT
-    DB-->>S: Commit confirmed
-    S-->>API: Persisted Order
-    API-->>C: Order response
+    C->>API: PATCH /orders/{id}/lines/{lineId}
+    API->>S: change_quantity(...)
+    S->>U: Load Order from repository
+    U->>DB: SELECT current aggregate rows
+    DB-->>U: State and version
+    U-->>S: Rehydrated Order
+    S->>R: change_line_quantity(lineId, quantity)
+    R->>R: Validate entity and aggregate invariants
+    R-->>S: New state and domain fact
+    S->>U: Save aggregate and outgoing intent
+    U->>DB: UPDATE with expected version
+    U->>DB: Save child rows and Outbox fact
+    U->>DB: COMMIT local SQL transaction
+    DB-->>U: Commit confirmed
+    U-->>API: Current Order snapshot
+    API-->>C: HTTP 200 with new row_version
 ```
 
-The SQL transaction is **local to one service**, not a distributed transaction. The event payload saved in `integration_outbox` represents an intent for external communication; it is **not** the authoritative state of the order, and no publisher runs in this project. The production-oriented concern of reliably relaying an Outbox entry to a broker is separate.
+**Why use the Aggregate Root?** An independent line update might violate an invariant that involves **other lines**, such as consistent currency or the total price cap. `Order` evaluates the whole proposed aggregate **before** accepting the change. For example, adding a second line that raises the total above 200.00 returns HTTP `400` and leaves the current state unchanged.
 
-## Requirements and setup
+## Start the service
 
-- Docker with Docker Compose
-- `make` and `curl`
-- Python 3 and the dependencies from `requirements.txt` for optional local test execution
-
-From this directory:
+Requirements: Docker with Compose and `make`. `curl` is useful for direct requests; Python 3 is needed to run `make demo` from the host.
 
 ```bash
 make up
+make status
+```
+
+| Interface | Address |
+|---|---|
+| FastAPI / OpenAPI | <http://localhost:8003/docs> |
+| Read-only Outbox endpoint | <http://localhost:8003/lab/outbox> |
+| Adminer | <http://localhost:8083> |
+
+Adminer settings: system `PostgreSQL`, server `db`, database/user/password `ftgo` (local development credentials).
+
+**Important when upgrading from an older version of this project:** the SQL schema has changed (`order_lines`, delivery-address columns, numeric money). SQLAlchemy `create_all()` does **not** migrate old tables. For a fresh disposable local database, use `make reset` **only if you agree to delete all existing orders and Outbox data**, then `make up`. Otherwise back up the volume and perform a schema migration before starting this version.
+
+## Use the REST API
+
+The public operations are:
+
+| Method | Endpoint | Domain behavior |
+|---|---|---|
+| `POST` | `/orders` | Factory creates `Order` and its initial `OrderLine` entities. |
+| `GET` | `/orders/{id}` | Read current state and stable line IDs. |
+| `POST` | `/orders/{id}/lines` | Root adds a child Entity after checking aggregate invariants. |
+| `PATCH` | `/orders/{id}/lines/{lineId}` | Root changes a line's quantity without changing its identity. |
+| `DELETE` | `/orders/{id}/lines/{lineId}` | Root removes a line only if the aggregate remains valid. |
+| `PUT` | `/orders/{id}/address` | Root replaces the immutable `Address` Value Object. |
+| `POST` | `/orders/{id}/approve` | Root checks address, total and lifecycle state. |
+| `POST` | `/orders/{id}/cancel` | Root records a cancellation state change. |
+| `GET` | `/lab/outbox` | Inspect stored outgoing event intents; read-only diagnostic route. |
+
+All write requests can include `expected_version` (query parameter on approve/cancel/delete-line, JSON field on other mutations). A stale version returns **HTTP 409**. Business-rule failures return **HTTP 400**, schema validation returns **422**, and missing resources return **404**.
+
+### Create an order
+
+```bash
 make create
+```
+
+Equivalent HTTP request:
+
+```bash
+curl -sS -X POST http://localhost:8003/orders \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "consumer_id": "CUST_1", "restaurant_id": "REST_1",
+    "lines": [{
+      "menu_item_id": "PIZZA", "name": "Pizza", "quantity": 2,
+      "unit_price": {"amount": "10.00", "currency": "EUR"}
+    }]
+  }'
+```
+
+The response includes an `id`, `row_version=1`, an OrderLine `line_id`, and a structured total (`20.00 EUR`). It does **not** include an editable reference to the in-memory entity.
+
+### Change an Entity and replace a Value Object
+
+Use the `id` and `line_id` returned by `POST /orders`:
+
+```bash
+# The Order Root, not the HTTP adapter, updates the child Entity.
+curl -sS -X PATCH "http://localhost:8003/orders/<id>/lines/<lineId>" \
+  -H 'Content-Type: application/json' \
+  -d '{"quantity":3,"expected_version":1}'
+
+# Replace the Address Value Object through the Order Root.
+curl -sS -X PUT "http://localhost:8003/orders/<id>/address" \
+  -H 'Content-Type: application/json' \
+  -d '{"address":{"street":"Via Roma 1","city":"Bari", "postal_code":"70100","country":"IT"},"expected_version":2}'
+
+# Approval is allowed only if the aggregate's rules are satisfied.
+curl -sS -X POST "http://localhost:8003/orders/<id>/approve?expected_version=3"
+```
+
+After approval, attempting to edit an OrderLine or the delivery address is rejected. Removing the final OrderLine is also forbidden: the root prevents an empty aggregate.
+
+### Run the complete API flow
+
+```bash
+make demo
 make events
 make db
 ```
 
-| Endpoint | URL |
+`make demo` sends **real HTTP requests to the running service**. It creates an Order, adds a child Entity, changes its quantity, replaces the Address, verifies a stale version (`409`) and an aggregate-wide limit (`400`), approves the Order, rejects a post-approval edit, and inspects the resulting Outbox facts. It does not write SQL or construct aggregates directly.
+
+## Tests
+
+All tests can run in the Docker application image without PostgreSQL: API and transaction tests use an isolated **SQLite in-memory** database. The HTTP tests invoke the actual FastAPI routes using `TestClient`; pure domain tests instantiate model objects directly to check encapsulation and equality.
+
+| Command | Verifies |
 |---|---|
-| OpenAPI documentation | <http://localhost:8003/docs> |
-| Read-only Outbox diagnostics | <http://localhost:8003/lab/outbox> |
-| Adminer database UI | <http://localhost:8083> |
+| `make test` | Complete suite: domain + FastAPI + persistence/outbox. |
+| `make test-entities` | Entity identity and stable `line_id` across changes. |
+| `make test-value-objects` | Immutable `Money`/`Address`, equality by value, decimal arithmetic. |
+| `make test-boundaries` | No direct mutation of child entities, address, or root state. |
+| `make test-invariants` | Cross-line total, currencies, minimum/maximum, lifecycle restrictions. |
+| `make test-events` | Domain Event creation and metadata, including no-op behavior. |
+| `make test-api` | HTTP endpoints, correct status codes and request validation. |
+| `make test-transactions` | Repository roundtrips, optimistic versioning, atomic Outbox commit/rollback. |
+| `make test-domain` | All pure domain tests. |
+| `make test-local` | Entire suite in the host Python environment (after installing requirements). |
 
-For Adminer choose PostgreSQL, server `db`, database `ftgo`, username `ftgo`, password `ftgo` (local Docker configuration only).
-
-`make create` returns an order `id`, `row_version=1` and `APPROVAL_PENDING` state. Inspect `orders`, `order_line_items` and `integration_outbox`; the inserted `OrderCreated` intent shares the same committed transaction as the order's state.
-
-### Approve through the Aggregate Root
-
-Replace `ORDER_ID` with the `id` returned above:
-
-```bash
-make approve ORDER_ID=<order-id> VERSION=1
-make events
-```
-
-The application reloads the aggregate, calls `order.approve()`, and stores the `APPROVED` state plus an `OrderApproved` Outbox entry in the same transaction. A second approval is rejected by the aggregate. The in-memory Domain Event is not itself a Kafka record or an event-store entry.
-
-### Verify optimistic locking
-
-Set `ORDER_ID` to an existing pending order ID. Run the following request **twice with the same** `expected_version`:
+Examples:
 
 ```bash
-ORDER_ID=<order-id>
-curl -i -sS -X POST "http://localhost:8003/orders/${ORDER_ID}/items" \
-  -H 'Content-Type: application/json' \
-  -d '{"expected_version":1,"menu_item_id":"SALAD","name":"Salad","price":5,"quantity":1}'
+make test-boundaries
+make test-value-objects
+make test-invariants
+make test-api
+make test-transactions
+make test
 ```
 
-The first request succeeds and increments the version; the second returns **HTTP 409**. SQL-level compare-and-update also detects two concurrent updates that both loaded the same version, including when the HTTP caller omitted `expected_version`.
+Each Docker-based test command builds the application image if necessary. The SQLite tests verify the local transactional design, but they **do not replace a PostgreSQL concurrency or full Docker end-to-end test**. To exercise the running PostgreSQL-backed service, use `make demo`.
 
-### Inspect the domain model without a database
+## Domain facts and Outbox
 
-```bash
-DATABASE_URL=sqlite+pysqlite:///:memory: python -m examples.domain_events
-```
+The root produces immutable Domain Events such as `OrderCreated`, `OrderLineQuantityChanged`, `DeliveryAddressChanged` and `OrderApproved`. The application collects those events and saves their serialized publication intents alongside the aggregate's **current state** in **one local SQL transaction**. `GET /lab/outbox` shows `eventId`, `aggregateId`, `eventType`, payload, and time.
 
-This script creates an `Order` and collects its `OrderCreated` domain notification in memory, without publishing or persisting messages. The separate HTTP service persists outgoing intents using its Unit of Work.
-
-## Testing
-
-```bash
-make test          # Run the Python suite in a container (Docker required)
-make test-local    # Run the suite in your local Python environment
-```
-
-For `make test-local`, install `requirements.txt` first; tests use a local in-memory **SQLite** database through SQLAlchemy rather than PostgreSQL. The suite verifies business invariants, read-only aggregate state, immutable child values, event generation, version checks, and atomic Outbox/aggregate rollback. Running the full PostgreSQL Docker stack is a separate integration check.
+The Outbox is **not an Event Store**. The aggregate is rebuilt from current-state SQL tables, **not** by replaying historical events. No Kafka/RabbitMQ publisher runs here; message delivery and idempotent consumers are intentionally separate responsibilities.
 
 ## Code map
 
-| Layer | Location | Responsibility |
+| Layer | Path | Responsibility |
 |---|---|---|
-| Domain | `app/domain/models.py` | `Order` root, immutable `OrderLineItem`, `OrderCreated`, `OrderApproved`, business rules |
-| Application | `app/application/order_service.py` | Use cases; coordinates one Unit of Work and collects domain notifications |
-| Ports | `app/ports/` | Repository and Unit of Work contracts |
-| Inbound adapters | `app/adapters/inbound/` | FastAPI requests and response serialization; read-only diagnostics |
-| Outbound adapters | `app/adapters/outbound/` | SQLAlchemy Repository and Unit of Work |
-| Infrastructure | `app/infrastructure/` | SQL tables, SQLAlchemy engine and mappings |
-| Examples | `examples/domain_events.py` | Isolated Domain Event illustration |
-| Tests | `tests/` | Domain, application and transactional persistence behavior |
+| Domain | `app/domain/models.py` | `Order`, `OrderLine`, `Money`, `Address`, rules, Domain Events. |
+| Application | `app/application/order_service.py` | One use case and Unit of Work per business operation. |
+| Ports | `app/ports/` | Repository and Unit of Work abstractions. |
+| Inbound adapters | `app/adapters/inbound/` | FastAPI endpoints, validation and serialized read-only views. |
+| Outbound adapters | `app/adapters/outbound/` | SQLAlchemy repository and transactional Unit of Work. |
+| Infrastructure | `app/infrastructure/` | SQL tables and database connection. |
+| API walkthrough | `examples/api_walkthrough.py` | Real HTTP requests against the running service. |
+| Tests | `tests/` | Entities, Value Objects, boundary rules, invariants, HTTP and persistence. |
 
-## Design boundaries and limitations
+## Scope and cleanup
 
-- **Not Event Sourcing:** `orders` and `order_line_items` contain current state. The Outbox is not an Event Store, and the aggregate is not rebuilt from historical events.
-- **No message broker or publisher:** an Outbox row is written but not delivered. A separate relay and idempotent consumers would be required for reliable integration messaging.
-- **Domain vs integration contract:** this compact example copies selected domain-event fields to an Outbox payload. A production-facing integration API would normally define and version an independent public event schema.
-- **One aggregate per transaction:** the order and its children form the consistency boundary. The Outbox entry is accompanying local infrastructure data; `Consumer` and `Restaurant` are referenced by ID rather than changed within the same transaction.
-- **Concurrency:** optimistic version checks protect concurrent SQL updates, while DDD invariants protect valid business transitions. These solve different problems.
-- **Simplified monetary model:** prices use `float`. Money-sensitive applications should use `Decimal` with explicit currency semantics. Authentication, operational monitoring and production migration tooling are also outside this example.
-
-## Cleanup
+This is a compact DDD example, not a production-ready Order service. It does not implement authentication, migrations, currency conversion, a separate DDD Domain Service, a broker, a Saga or Event Sourcing. The explicit amounts and lifecycle rules are illustrative business policies; adapt them to your domain.
 
 ```bash
-make down
-make reset  # removes the local PostgreSQL Docker volume
+make down    # stop containers and retain PostgreSQL data
+make reset   # WARNING: delete all data in this project's Docker volume
 ```

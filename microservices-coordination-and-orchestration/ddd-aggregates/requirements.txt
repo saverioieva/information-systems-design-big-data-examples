@@ -1,4 +1,6 @@
-fastapi
-uvicorn[standard]
-SQLAlchemy
-psycopg2-binary
+fastapi>=0.110,<1
+pydantic>=2.7,<3
+uvicorn[standard]>=0.28,<1
+SQLAlchemy>=2.0,<3
+psycopg2-binary>=2.9,<3
+httpx>=0.27,<1

@@ -1,6 +1,6 @@
 COMPOSE=docker compose
 KAFKA=$(COMPOSE) exec -T kafka /opt/kafka/bin
-.PHONY: up down reset logs topics partitions produce consume replay worker groups test ui
+.PHONY: up status down reset logs topics partitions produce consume replay worker groups group-info test ui
 up:
 	$(COMPOSE) up -d kafka kafka-ui
 	$(COMPOSE) run --rm topics
@@ -21,9 +21,11 @@ consume:
 replay:
 	$(COMPOSE) run --rm client python -m app.main consume --group replay-$(shell date +%s) --limit $(or $(LIMIT),12) --idle 12
 worker:
-	$(COMPOSE) run --rm client python -m app.main consume --group shared-workers --limit 0 --idle 0
+	$(COMPOSE) run --rm client python -m app.main consume --group $(or $(GROUP),shared-workers) --limit 0 --idle 0
 groups:
 	$(KAFKA)/kafka-consumer-groups.sh --bootstrap-server kafka:19092 --list
+group-info:
+	$(KAFKA)/kafka-consumer-groups.sh --bootstrap-server kafka:19092 --describe --group $(or $(GROUP),order-processors)
 logs:
 	$(COMPOSE) logs -f kafka
 test:

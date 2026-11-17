@@ -1,57 +1,47 @@
-# app/infrastructure/orm_models.py
+"""Relational *current-state* storage (not an Event Store)."""
 
-from sqlalchemy import (
-    Column,
-    String,
-    Enum as PgEnum,
-    ForeignKey,
-    Integer,
-    Float,
-)
+from sqlalchemy import Column, DateTime, Enum as SqlEnum, ForeignKey, Integer, JSON, Numeric, String, func
 from sqlalchemy.orm import relationship
 
-from .db import Base
 from app.domain.models import OrderState
+from .db import Base
 
 
 class OrderModel(Base):
-    __tablename__ = "orders"
+    __tablename__ = 'orders'
 
     id = Column(String, primary_key=True)
     consumer_id = Column(String, nullable=False)
     restaurant_id = Column(String, nullable=False)
-    state = Column(PgEnum(OrderState), nullable=False)
-
-    # Explicit application-managed optimistic concurrency counter.
+    state = Column(SqlEnum(OrderState), nullable=False)
     version_id = Column(Integer, nullable=False, default=1)
+    delivery_street = Column(String, nullable=True)
+    delivery_city = Column(String, nullable=True)
+    delivery_postal_code = Column(String, nullable=True)
+    delivery_country = Column(String, nullable=True)
 
-    line_items = relationship(
-        "OrderLineItemModel",
-        back_populates="order",
-        cascade="all, delete-orphan",
-        lazy="joined",
+    lines = relationship(
+        'OrderLineModel', back_populates='order', cascade='all, delete-orphan',
+        lazy='selectin', order_by='OrderLineModel.menu_item_id'
     )
 
 
-class OrderLineItemModel(Base):
-    __tablename__ = "order_line_items"
+class OrderLineModel(Base):
+    __tablename__ = 'order_lines'
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    order_id = Column(String, ForeignKey("orders.id"), nullable=False)
+    line_id = Column(String, primary_key=True)
+    order_id = Column(String, ForeignKey('orders.id', ondelete='CASCADE'), nullable=False, index=True)
     menu_item_id = Column(String, nullable=False)
     name = Column(String, nullable=False)
-    price = Column(Float, nullable=False)
+    unit_price = Column(Numeric(12, 2), nullable=False)
+    currency = Column(String(3), nullable=False)
     quantity = Column(Integer, nullable=False)
 
-    order = relationship("OrderModel", back_populates="line_items")
-
-
-from sqlalchemy import DateTime, JSON, func
+    order = relationship('OrderModel', back_populates='lines')
 
 
 class IntegrationOutboxModel(Base):
-    """Outgoing integration messages only. Current state is in orders / order_line_items."""
-    __tablename__ = "integration_outbox"
+    __tablename__ = 'integration_outbox'
 
     event_id = Column(String, primary_key=True)
     aggregate_id = Column(String, nullable=False, index=True)

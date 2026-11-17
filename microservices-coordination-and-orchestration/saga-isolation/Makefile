@@ -40,11 +40,11 @@ pessimistic:
 	python3 demo/run_scenario.py pessimistic
 by-value:
 	python3 demo/run_scenario.py by_value
-# Standalone PostgreSQL-backed experiments: real additive updates / Version File.
+# Distributed countermeasure workflows: REST -> Order Outbox -> RabbitMQ -> participants.
 commutative:
-	$(COMPOSE) exec -T orchestrator python -m app.demo_countermeasures commutative
+	python3 demo/run_countermeasure.py commutative
 version-file:
-	$(COMPOSE) exec -T orchestrator python -m app.demo_countermeasures version-file
+	python3 demo/run_countermeasure.py version-file
 
 .PHONY: order history cancel-history gate release cancel-gate release-cancel
 order:
@@ -123,14 +123,14 @@ help:
 	  '  make up                Start RabbitMQ, four PostgreSQL services, APIs' \
 	  '  make demo              Run ALL the examples automatically' \
 	  '  make demo-saga         Run competing-Saga examples' \
-	  '  make demo-extra        Run independent credit/version-file examples' \
+	  '  make demo-extra        Run distributed credit and Version File workflows' \
 	  '  make unsafe            Reproduce a lost update' \
 	  '  make semantic          Semantic lock + sequential cancellation' \
-	  '  make pessimistic       Protective state before compensation' \
-	  '  make commutative       Commutative credit updates, idempotency' \
+	  '  make pessimistic       Pending -> Kitchen pivot -> CANCELLED -> Accounting void' \
+	  '  make commutative       REST/RabbitMQ Consumer + Accounting credit sagas' \
 	  '  make reread            Reread Value with atomic status check' \
 	  '  make optimistic        Optimistic locking with version check' \
-	  '  make version-file      Persist and reorder noncommutative operations' \
+	  '  make version-file      REST/RabbitMQ Consumer + Kitchen reordering' \
 	  '  make by-value          Choose policy using order amount' \
 	  '  make test / make verify   Unit and optional Postgres tests' \
 	  '  make down              Stop containers and keep DB data' \

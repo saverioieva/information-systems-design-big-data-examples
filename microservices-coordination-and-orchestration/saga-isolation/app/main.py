@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.application.saga_coordinator import DomainConflict, SagaCoordinator
+from app.application.countermeasure_workflows import CountermeasureWorkflows
 from app.application.saga_participant_handler import SagaParticipantHandler
 from app.domain.state_machine import SagaStateMachine
 from app.domain.cancel_state_machine import CancelOrderStateMachine
@@ -20,6 +21,9 @@ ROLE = os.getenv('ROLE', 'orchestrator')
 DATABASE_URL = os.environ['DATABASE_URL']
 store = PostgresSagaStore(ROLE, DATABASE_URL)
 coordinator = SagaCoordinator(store) if ROLE == 'orchestrator' else None
+countermeasures = CountermeasureWorkflows(store) if ROLE == 'orchestrator' else None
+if coordinator is not None:
+    coordinator.countermeasures = countermeasures
 participant = SagaParticipantHandler(store, ROLE) if ROLE != 'orchestrator' else None
 
 
@@ -164,8 +168,30 @@ def transitions():
             'cancelOrder': CancelOrderStateMachine().as_rows()}
 
 
+@app.post('/countermeasures/commutative', status_code=202)
+def start_commutative():
+    order_api_only()
+    return countermeasures.start_commutative()
+
+
+@app.post('/countermeasures/version-file', status_code=202)
+def start_version_file():
+    order_api_only()
+    return countermeasures.start_version_file()
+
+
+@app.get('/countermeasures/{run_id}')
+def countermeasure_status(run_id: str):
+    order_api_only()
+    result = countermeasures.get(run_id)
+    if result is None:
+        raise HTTPException(404, 'Countermeasure run not found')
+    return result
+
 if __name__ == '__main__':
     # Participants run as standalone command consumers; orchestrator uses Uvicorn.
     store.initialize()
     threading.Thread(target=relay_loop, daemon=True).start()
     consume(ROLE, participant)
+
+

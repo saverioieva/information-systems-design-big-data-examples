@@ -1,0 +1,1 @@
+"""DDD Aggregate test suite."""

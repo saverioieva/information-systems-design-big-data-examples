@@ -16,7 +16,7 @@ from app.adapters.outbound.postgres_store import (
     PostgresSagaStore, COMMON_TABLES, ROLE_TABLES, command_attempts,
     command_results, orders, sagas, saga_history, inbox, outbox,
     cancel_gates, credit_balances, credit_adjustments,
-    version_file_events, version_file_states,
+    version_file_events, version_file_states, countermeasure_runs, countermeasure_steps,
 )
 
 
@@ -44,6 +44,8 @@ class PostgresSchemaTests(unittest.TestCase):
         self.assertIn('applied', version_file_events.c)
         self.assertIn('operation', version_file_events.c)
         self.assertIn('value', version_file_events.c)
+        self.assertIn('run_id', countermeasure_runs.c)
+        self.assertIn('step_id', countermeasure_steps.c)
 
 
 @unittest.skipUnless(os.environ.get('TEST_DATABASE_URL'),
@@ -88,6 +90,38 @@ if __name__=='__main__':
 @unittest.skipUnless(os.environ.get('TEST_DATABASE_URL'),
                      'Set TEST_DATABASE_URL to a disposable PostgreSQL database to run')
 class IsolationPostgresIntegrationTests(unittest.TestCase):
+    def test_post_pivot_cancelled_is_guarded_and_idempotent(self):
+        """Optional real-PostgreSQL guard for SetCancelled after Kitchen pivot."""
+        from sqlalchemy import delete
+        from app.adapters.outbound.postgres_store import (
+            cancel_sagas, cancel_history,
+        )
+        store = PostgresSagaStore('orchestrator', os.environ['TEST_DATABASE_URL'])
+        store.initialize()
+        oid = str(uuid4())
+        try:
+            with store.transaction() as tx:
+                tx.create_order(oid, 'CUST_1', 42, isolation_mode='pessimistic')
+                tx.start_cancellation(oid, initial_stage='REJECT_TICKET_PIVOT')
+            with self.assertRaisesRegex(ValueError, 'completed Kitchen pivot'):
+                with store.transaction() as tx:
+                    tx.set_cancelled_after_pivot(oid)
+            with store.transaction() as tx:
+                tx.set_cancel_stage(oid, 'SET_CANCELLED')
+                tx.set_cancelled_after_pivot(oid)
+                tx.set_cancelled_after_pivot(oid)
+                order = tx.get_order(oid)
+                self.assertEqual((order['status'], order['version']), ('CANCELLED', 2))
+        finally:
+            with store.engine.begin() as conn:
+                conn.execute(delete(cancel_history).where(cancel_history.c.order_id == oid))
+                conn.execute(delete(cancel_sagas).where(cancel_sagas.c.order_id == oid))
+                conn.execute(delete(saga_history).where(saga_history.c.order_id == oid))
+                conn.execute(delete(sagas).where(sagas.c.order_id == oid))
+                conn.execute(delete(outbox).where(outbox.c.gate_order_id == oid))
+                conn.execute(delete(orders).where(orders.c.order_id == oid))
+            store.engine.dispose()
+
     def test_held_outbox_and_version_check_after_cancellation(self):
         """Optional actual PostgreSQL test of the race barrier and CAS SQL."""
         from sqlalchemy import delete, select
@@ -135,48 +169,40 @@ class IsolationPostgresIntegrationTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('TEST_DATABASE_URL'),
                      'Set TEST_DATABASE_URL to a disposable PostgreSQL database to run')
 class CountermeasurePostgresIntegrationTests(unittest.TestCase):
-    def test_commutative_demo_uses_real_postgres(self):
-        # End-to-end adapter regression for `make commutative`, rather than
-        # only a fake transaction; requires TEST_DATABASE_URL.
-        from app.demo_countermeasures import run_commutative
-        from contextlib import redirect_stdout
-        from io import StringIO
-        store = PostgresSagaStore('orchestrator', os.environ['TEST_DATABASE_URL'])
-        store.initialize()
-        output = StringIO()
-        try:
-            with redirect_stdout(output):
-                run_commutative(store)
-            self.assertIn('COMMUTATIVE: +25,-10 -> 115', output.getvalue())
-        finally:
-            store.engine.dispose()
-
-    def test_commutative_and_version_file_are_durable_and_idempotent(self):
+    def test_participant_owned_credit_and_version_file_are_durable(self):
+        # This single optional test DB is disposable; each role creates its
+        # own tables. In Docker, these roles use *different* PostgreSQLs.
         from sqlalchemy import delete
-        store = PostgresSagaStore('orchestrator', os.environ['TEST_DATABASE_URL'])
-        store.initialize()
+        url = os.environ['TEST_DATABASE_URL']
+        accounting = PostgresSagaStore('accounting', url)
+        kitchen = PostgresSagaStore('kitchen', url)
+        accounting.initialize()
+        kitchen.initialize()
         account_id, stream_id = str(uuid4()), str(uuid4())
         try:
-            with store.transaction() as tx:
+            with accounting.transaction() as tx:
                 tx.initialize_credit(account_id, 100)
                 self.assertEqual(tx.adjust_credit(account_id, 'credit-' + account_id, 25), 125)
+            with accounting.transaction() as tx:
                 self.assertEqual(tx.adjust_credit(account_id, 'credit-' + account_id, 25), 125)
                 self.assertEqual(tx.adjust_credit(account_id, 'debit-' + account_id, -10), 115)
+            with kitchen.transaction() as tx:
                 self.assertEqual(tx.apply_versioned(stream_id, 3, 'ADD', 7)['buffered'], 1)
                 self.assertEqual(tx.apply_versioned(stream_id, 1, 'SET', 10)['total'], 10)
-            # Across transactions, buffered seq 3 is still persisted.
-            with store.transaction() as tx:
+            with kitchen.transaction() as tx:
                 self.assertEqual(tx.apply_versioned(stream_id, 2, 'MULTIPLY', 2),
                                  {'nextSequence': 4, 'total': 27, 'buffered': 0})
                 self.assertEqual(tx.apply_versioned(stream_id, 3, 'ADD', 7)['total'], 27)
         finally:
-            with store.engine.begin() as conn:
+            with accounting.engine.begin() as conn:
                 conn.execute(delete(credit_adjustments).where(
                     credit_adjustments.c.account_id == account_id))
                 conn.execute(delete(credit_balances).where(
                     credit_balances.c.account_id == account_id))
+            with kitchen.engine.begin() as conn:
                 conn.execute(delete(version_file_events).where(
                     version_file_events.c.stream_id == stream_id))
                 conn.execute(delete(version_file_states).where(
                     version_file_states.c.stream_id == stream_id))
-            store.engine.dispose()
+            accounting.engine.dispose()
+            kitchen.engine.dispose()

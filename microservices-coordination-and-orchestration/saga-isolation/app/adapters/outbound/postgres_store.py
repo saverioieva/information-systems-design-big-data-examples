@@ -91,8 +91,7 @@ cancel_gates = Table('cancel_gates', metadata,
     Column('order_id', String(64), ForeignKey('orders.order_id'), primary_key=True),
     Column('state', String(20), nullable=False))
 
-# A narrow, independent credit ledger for the Commutative Updates experiment.
-# This is deliberately NOT a substitute for Accounting's real authorization.
+# Accounting-owned additive credit ledger. One idempotent delta per operation ID.
 credit_balances = Table('credit_balances', metadata,
     Column('account_id', String(64), primary_key=True),
     Column('balance', Integer, nullable=False))
@@ -101,7 +100,7 @@ credit_adjustments = Table('credit_adjustments', metadata,
     Column('account_id', String(64), ForeignKey('credit_balances.account_id'), nullable=False),
     Column('delta', Integer, nullable=False))
 
-# Version File is a persisted sequence/reordering buffer, NOT optimistic locking.
+# Kitchen-owned persisted Version File: sequence buffering, not optimistic locking.
 version_file_states = Table('version_file_states', metadata,
     Column('stream_id', String(64), primary_key=True),
     Column('next_sequence', Integer, nullable=False),
@@ -121,13 +120,31 @@ authorizations = Table('authorizations', metadata,
     Column('order_id', String(64), primary_key=True),
     Column('status', String(40), nullable=False))
 
+
+# Durable progress for coordinated multi-service countermeasure workflows.
+# These contain no FK to orders because they model separate example workflows.
+countermeasure_runs = Table('countermeasure_runs', metadata,
+    Column('run_id', String(64), primary_key=True),
+    Column('kind', String(32), nullable=False),
+    Column('stage', String(32), nullable=False),
+    Column('created_at', DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+countermeasure_steps = Table('countermeasure_steps', metadata,
+    Column('step_id', String(64), primary_key=True),
+    Column('run_id', String(64), ForeignKey('countermeasure_runs.run_id'), nullable=False),
+    Column('saga_id', String(64), nullable=False),
+    Column('name', String(32), nullable=False),
+    Column('status', String(32), nullable=False),
+    Column('data_json', Text, nullable=False),
+    Column('result_json', Text),
+    Column('created_at', DateTime(timezone=True), nullable=False, server_default=func.now()))
+
 ROLE_TABLES = {
     'orchestrator': (orders, sagas, saga_history, cancel_sagas, cancel_history, approval_gates,
-                     cancel_gates, credit_balances, credit_adjustments,
-                     version_file_states, version_file_events),
+                     cancel_gates, countermeasure_runs, countermeasure_steps),
     'consumer': (),
-    'kitchen': (tickets,),
-    'accounting': (authorizations,),
+    'kitchen': (tickets, version_file_states, version_file_events),
+    'accounting': (authorizations, credit_balances, credit_adjustments),
 }
 COMMON_TABLES = (inbox, outbox, command_results, command_attempts)
 
@@ -233,6 +250,8 @@ class PostgresTransaction:
             cancel_gates.c.order_id == oid)).scalar_one_or_none() or 'NOT_REACHED'
 
     def release_cancellation(self, oid):
+        # Test-only hold is created AFTER SetCancelled. Releasing it permits
+        # the already committed final VoidAuthorization command to be relayed.
         changed = self.db.execute(update(cancel_gates).where(and_(
             cancel_gates.c.order_id == oid, cancel_gates.c.state == 'PAUSED'))
             .values(state='RELEASED'))
@@ -270,14 +289,14 @@ class PostgresTransaction:
                                .where(cancel_sagas.c.order_id == oid)
                                .with_for_update()).scalar_one_or_none()
 
-    def start_cancellation(self, oid):
+    def start_cancellation(self, oid, initial_stage='VOID_AUTHORIZATION'):
         result = self.db.execute(update(orders).where(and_(
             orders.c.order_id == oid,
             orders.c.status.in_(['APPROVAL_PENDING', 'APPROVED'])))
             .values(status='CANCELLATION_PENDING', version=orders.c.version + 1))
         if result.rowcount != 1:
             raise ValueError('Order is not cancellable')
-        self.db.execute(insert(cancel_sagas).values(order_id=oid, stage='VOID_AUTHORIZATION'))
+        self.db.execute(insert(cancel_sagas).values(order_id=oid, stage=initial_stage))
 
     def set_cancel_stage(self, oid, stage):
         self.db.execute(update(cancel_sagas).where(cancel_sagas.c.order_id == oid)
@@ -289,6 +308,25 @@ class PostgresTransaction:
             .values(status='CANCELLED', version=orders.c.version + 1))
         if result.rowcount != 1:
             raise ValueError('Cannot complete cancellation; order was modified concurrently')
+
+    def set_cancelled_after_pivot(self, oid):
+        """Idempotent post-pivot local transition with a guarded Saga stage.
+
+        Only a completed Kitchen pivot can advance the coordinator to the
+        SET_CANCELLED stage. A repeated command must not bump the version.
+        """
+        stage = self.db.execute(select(cancel_sagas.c.stage).where(
+            cancel_sagas.c.order_id == oid).with_for_update()).scalar_one_or_none()
+        if stage not in ('SET_CANCELLED', 'VOID_AUTHORIZATION_RETRIABLE', 'CANCELLED'):
+            raise ValueError('SetCancelled requires a completed Kitchen pivot')
+        result = self.db.execute(update(orders).where(and_(
+            orders.c.order_id == oid, orders.c.status == 'CANCELLATION_PENDING'))
+            .values(status='CANCELLED', version=orders.c.version + 1))
+        if result.rowcount == 0:
+            status = self.db.execute(select(orders.c.status).where(
+                orders.c.order_id == oid)).scalar_one_or_none()
+            if status != 'CANCELLED':
+                raise ValueError(f'Cannot set CANCELLED after pivot: {status}')
 
     def record_cancel_transition(self, oid, prior, event, stage, command):
         self.db.execute(insert(cancel_history).values(order_id=oid, from_stage=prior,
@@ -404,6 +442,49 @@ class PostgresTransaction:
             version_file_events.c.stream_id == stream_id,
             version_file_events.c.applied.is_(False)))).scalar_one()
         return {'nextSequence': next_sequence, 'total': total, 'buffered': buffered}
+
+
+    def create_countermeasure_run(self, run_id, kind, stage):
+        self.db.execute(insert(countermeasure_runs).values(
+            run_id=run_id, kind=kind, stage=stage))
+
+    def create_countermeasure_step(self, run_id, step_id, saga_id, name, status, data):
+        self.db.execute(insert(countermeasure_steps).values(
+            run_id=run_id, step_id=step_id, saga_id=saga_id, name=name,
+            status=status, data_json=json.dumps(data)))
+
+    def update_countermeasure_step(self, step_id, status, result=None):
+        changes = {'status': status}
+        if result is not None:
+            changes['result_json'] = json.dumps(result)
+        changed = self.db.execute(update(countermeasure_steps)
+                                  .where(countermeasure_steps.c.step_id == step_id)
+                                  .values(**changes))
+        if changed.rowcount != 1:
+            raise ValueError(f'Unknown countermeasure step: {step_id}')
+
+    def set_countermeasure_run_stage(self, run_id, stage):
+        changed = self.db.execute(update(countermeasure_runs)
+                                  .where(countermeasure_runs.c.run_id == run_id)
+                                  .values(stage=stage))
+        if changed.rowcount != 1:
+            raise ValueError(f'Unknown countermeasure run: {run_id}')
+
+    def get_countermeasure_run(self, run_id):
+        row = self.db.execute(select(countermeasure_runs)
+                              .where(countermeasure_runs.c.run_id == run_id)).mappings().first()
+        if row is None:
+            return None
+        steps = self.db.execute(select(countermeasure_steps)
+                    .where(countermeasure_steps.c.run_id == run_id)
+                    .order_by(countermeasure_steps.c.created_at, countermeasure_steps.c.step_id))
+        return {'runId': run_id, 'kind': row['kind'], 'status': row['stage'],
+                'steps': [
+                    {'stepId': r.step_id, 'runId': run_id, 'sagaId': r.saga_id,
+                     'name': r.name, 'status': r.status,
+                     'data': json.loads(r.data_json),
+                     'result': json.loads(r.result_json) if r.result_json else None}
+                    for r in steps]}
 
     def amount(self, oid):
         value = self.db.execute(select(orders.c.amount).where(orders.c.order_id == oid)).scalar_one_or_none()

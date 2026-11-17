@@ -1,9 +1,13 @@
-"""Pure state machine for a Cancel Order Saga.
+"""Pure CancelOrder transitions, including the Pessimistic View variant.
 
-CancelOrder is a second business workflow, not an HTTP status update: it
-voids the existing card authorization and rejects the kitchen ticket before
-marking cancellation complete.  The order remains CANCELLATION_PENDING while
-those asynchronous compensation commands execute.
+The ordinary cancellation sequence remains VoidAuthorization -> RejectTicket ->
+CANCELLED. Pessimistic View instead uses a successful Kitchen RejectTicket as
+its pivot: while the order is CANCELLATION_PENDING, Kitchen makes the decision
+irreversible. The post-pivot steps set the Order to CANCELLED *before* Accounting
+voids the authorization; both steps are retriable and idempotent.
+
+This example models a successful pivot. It does not implement business rejection
+of Kitchen cancellation or its compensating rollback to the previous state.
 """
 from app.domain.state_machine import Transition
 
@@ -13,6 +17,13 @@ class CancelOrderStateMachine:
         ('VOID_AUTHORIZATION', 'AuthorizationVoided'): Transition(
             'REJECT_TICKET', 'command.kitchen', 'RejectTicket'),
         ('REJECT_TICKET', 'TicketRejected'): Transition('CANCELLED', None, None),
+        # Pessimistic View: the Kitchen success is the business pivot.
+        ('REJECT_TICKET_PIVOT', 'TicketRejected'): Transition(
+            'SET_CANCELLED', 'command.order', 'SetCancelled'),
+        ('SET_CANCELLED', 'OrderCancelled'): Transition(
+            'VOID_AUTHORIZATION_RETRIABLE', 'command.accounting', 'VoidAuthorization'),
+        ('VOID_AUTHORIZATION_RETRIABLE', 'AuthorizationVoided'): Transition(
+            'CANCELLED', None, None),
     }
 
     def advance(self, stage: str | None, reply: str) -> Transition | None:

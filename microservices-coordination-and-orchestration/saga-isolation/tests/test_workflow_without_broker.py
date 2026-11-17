@@ -29,6 +29,7 @@ class SagaWorkflowTest(unittest.TestCase):
             'reply.orchestrator':'orchestrator',
             # Fake broker models TTL expiry immediately.
             'retry.command.kitchen':'kitchen','retry.command.order':'order',
+            'retry.command.accounting':'accounting',
         }
         for _ in range(100):
             dispatched=0

@@ -96,11 +96,11 @@ class FakeTransaction:
 
     def get_cancel_stage(self, oid): return self.s['cancel_sagas'].get(oid)
 
-    def start_cancellation(self, oid):
+    def start_cancellation(self, oid, initial_stage='VOID_AUTHORIZATION'):
         self.s['orders'][oid]['status']='CANCELLATION_PENDING'
         self.s['orders'][oid]['version']+=1
-        self.s['cancel_sagas'][oid]='VOID_AUTHORIZATION'
-        self.s['orders'][oid]['cancelStage']='VOID_AUTHORIZATION'
+        self.s['cancel_sagas'][oid]=initial_stage
+        self.s['orders'][oid]['cancelStage']=initial_stage
 
     def set_cancel_stage(self, oid, stage):
         self.s['cancel_sagas'][oid]=stage
@@ -112,6 +112,17 @@ class FakeTransaction:
             raise ValueError('Cannot finish cancellation')
         row['status']='CANCELLED'
         row['version']+=1
+
+    def set_cancelled_after_pivot(self, oid):
+        if self.s['cancel_sagas'].get(oid) not in (
+                'SET_CANCELLED', 'VOID_AUTHORIZATION_RETRIABLE', 'CANCELLED'):
+            raise ValueError('SetCancelled requires a completed Kitchen pivot')
+        row = self.s['orders'][oid]
+        if row['status'] == 'CANCELLATION_PENDING':
+            row['status'] = 'CANCELLED'
+            row['version'] += 1
+        elif row['status'] != 'CANCELLED':
+            raise ValueError('Order cannot be cancelled after pivot')
 
     def record_cancel_transition(self, oid, prior, event, stage, command):
         self.s['cancel_history'].append({'order_id':oid, 'fromStage':prior,
@@ -125,6 +136,33 @@ class FakeTransaction:
         if value!='AUTHORIZED' and value!='VOIDED':
             raise ValueError('Authorization missing')
         self.s['authorizations'][oid]='VOIDED'
+
+
+    def create_countermeasure_run(self, run_id, kind, stage):
+        self.s['countermeasure_runs'][run_id] = {
+            'runId': run_id, 'kind': kind, 'status': stage, 'steps': []}
+
+    def create_countermeasure_step(self, run_id, step_id, saga_id, name, status, data):
+        self.s['countermeasure_runs'][run_id]['steps'].append({
+            'runId': run_id, 'stepId': step_id, 'sagaId': saga_id, 'name': name,
+            'status': status, 'data': copy.deepcopy(data), 'result': None})
+
+    def update_countermeasure_step(self, step_id, status, result=None):
+        for run in self.s['countermeasure_runs'].values():
+            for step in run['steps']:
+                if step['stepId'] == step_id:
+                    step['status'] = status
+                    if result is not None:
+                        step['result'] = copy.deepcopy(result)
+                    return
+        raise ValueError('Unknown step')
+
+    def set_countermeasure_run_stage(self, run_id, stage):
+        self.s['countermeasure_runs'][run_id]['status'] = stage
+
+    def get_countermeasure_run(self, run_id):
+        run = self.s['countermeasure_runs'].get(run_id)
+        return copy.deepcopy(run) if run else None
 
     def initialize_credit(self, account_id, opening_balance):
         self.s['credit_balances'].setdefault(account_id, opening_balance)
@@ -194,7 +232,8 @@ class FakeSagaStore:
             ('command_attempts',[]),('saga_history',[]),
             ('approval_gates',{}),('cancel_gates',{}),('cancel_sagas',{}),('cancel_history',[]),
             ('credit_balances',{}),('credit_adjustments',{}),
-            ('version_file_states',{}),('version_file_events',{}))}
+            ('version_file_states',{}),('version_file_events',{}),
+            ('countermeasure_runs',{}))}
 
     def initialize(self): pass
 

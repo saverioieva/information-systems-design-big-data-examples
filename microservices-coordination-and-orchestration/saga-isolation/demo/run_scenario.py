@@ -77,20 +77,22 @@ def run(mode, amount=42, summary=False):
         assert result['stage'] == 'APPROVED', result
         print('SUCCESS: semantic lock rejected concurrency; later cancellation completed.', flush=True)
     elif effective_mode == 'pessimistic':
-        api('POST', path + '/cancel', expected=202)
+        started = api('POST', path + '/cancel', expected=202)
+        assert started['status'] == 'CANCELLATION_PENDING', started
+        assert started['cancelStage'] == 'REJECT_TICKET_PIVOT', started
+        print('CANCELLATION_PENDING committed; Kitchen RejectTicket is the pivot.')
         until(path + '/cancel/gate', 'gate', 'PAUSED')
-        pending = until(path, 'status', 'CANCELLATION_PENDING')
-        assert pending['cancelStage'] == 'VOID_AUTHORIZATION', pending
-        print('PESSIMISTIC VIEW: Order already CANCELLATION_PENDING while the')
-        print('compensating authorization command is deliberately held.')
+        after_pivot = until(path, 'status', 'CANCELLED')
+        assert after_pivot['cancelStage'] == 'VOID_AUTHORIZATION_RETRIABLE', after_pivot
+        print('Kitchen pivot succeeded, then SetCancelled committed; Accounting is NOT voided yet.')
         api('POST', path + '/release', expected=200)
         skipped = until(path, 'stage', 'SUPERSEDED')
-        assert skipped['status'] == 'CANCELLATION_PENDING', skipped
-        print('Stale approval rechecked the current status and was skipped.')
+        assert skipped['status'] == 'CANCELLED', skipped
+        print('Stale approval was rejected by Reread Value after CANCELLED.')
         api('POST', path + '/cancel/release', expected=200)
         until(path, 'cancelStage', 'CANCELLED')
         result = until(path, 'status', 'CANCELLED')
-        print('SUCCESS: protective status-before-effects + reread; no premature APPROVED.')
+        print('SUCCESS: pending -> Kitchen pivot -> CANCELLED -> Accounting void (retriable).')
     else:
         api('POST', path + '/cancel', expected=202)
         until(path, 'cancelStage', 'CANCELLED')
