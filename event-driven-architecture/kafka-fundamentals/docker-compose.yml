@@ -27,15 +27,27 @@ services:
       retries: 30
     volumes:
       - kafka_data:/var/lib/kafka/data
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    # Local-only: the example Kafka cluster has no authentication.
+    ports:
+      - "127.0.0.1:8085:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: kafka-fundamentals
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+    depends_on:
+      kafka:
+        condition: service_healthy
   topics:
     image: apache/kafka:4.1.1
     depends_on:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-ec"]
-    command: |
-      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic orders.events --partitions 3 --replication-factor 1
-      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic orders.events
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic orders.events --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic orders.events
     restart: "no"
   client:
     profiles: ["tools"]

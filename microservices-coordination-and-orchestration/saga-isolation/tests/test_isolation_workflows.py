@@ -90,11 +90,64 @@ class CompetingSagasTest(unittest.TestCase):
         self.drain()
         row = self.coordinator.get_order(oid)
         self.assertEqual((row['status'], row['stage'], row['cancelStage']),
-                         ('CANCELLED', 'CANCELLED', 'CANCELLED'))
+                         ('CANCELLED', 'SUPERSEDED', 'CANCELLED'))
         self.assertEqual(row['version'], 2)
         self.assertEqual(self.coordinator.history(oid)[-1]['event'], 'OrderApprovalSkipped')
         self.assertEqual(len([r for r in self.stores['orchestrator'].state['command_attempts']
                               if r['action'] == 'ApproveOrder']), 1)
+
+    def test_reread_value_rechecks_live_status_without_queued_version(self):
+        oid = self.paused('reread')
+        self.coordinator.cancel_order(oid)
+        self.completed_cancellation(oid)
+        self.coordinator.release_approval(oid)
+        self.drain()
+        row = self.coordinator.get_order(oid)
+        self.assertEqual((row['status'], row['stage']), ('CANCELLED', 'SUPERSEDED'))
+        self.assertEqual(self.coordinator.history(oid)[-1]['event'], 'OrderApprovalSkipped')
+
+    def test_pessimistic_view_publishes_protective_state_before_external_effects(self):
+        oid = self.paused('pessimistic')
+        self.coordinator.cancel_order(oid)
+        # The status and the held outgoing message are committed together.
+        before = self.coordinator.get_order(oid)
+        self.assertEqual(before['status'], 'CANCELLATION_PENDING')
+        self.assertEqual(before['cancelStage'], 'VOID_AUTHORIZATION')
+        self.assertEqual(self.coordinator.cancellation_gate(oid)['gate'], 'PAUSED')
+        self.assertEqual(self.stores['accounting'].state['authorizations'][oid], 'AUTHORIZED')
+        self.assertEqual(self.stores['kitchen'].state['tickets'][oid], 'AWAITING_ACCEPTANCE')
+        self.assertTrue(any(r['held'] and r['routing_key'] == 'command.accounting'
+                            for r in self.stores['orchestrator'].state['outbox']))
+        # Release only the stale approval while the CancelOrder saga is paused.
+        self.coordinator.release_approval(oid)
+        self.drain()
+        while_pending = self.coordinator.get_order(oid)
+        self.assertEqual((while_pending['status'], while_pending['stage']),
+                         ('CANCELLATION_PENDING', 'SUPERSEDED'))
+        self.assertEqual(self.stores['accounting'].state['authorizations'][oid], 'AUTHORIZED')
+        self.coordinator.release_cancellation(oid)
+        self.completed_cancellation(oid)
+        with self.assertRaises(DomainConflict):
+            self.coordinator.release_cancellation(oid)
+
+    def test_by_value_selects_policy_by_amount_and_persists_effective_mode(self):
+        low = self.coordinator.place_order('CUST_1', 42, isolation_mode='by_value')
+        high = self.coordinator.place_order('CUST_1', 90, isolation_mode='by_value')
+        self.assertEqual(low['isolationMode'], 'reread')
+        self.assertEqual(high['isolationMode'], 'semantic')
+        self.assertEqual(low['requestedIsolationMode'], 'by_value')
+        self.assertEqual(self.coordinator.get_order(high['orderId'])['isolationMode'], 'semantic')
+        self.drain()
+        with self.assertRaisesRegex(DomainConflict, 'Semantic lock'):
+            self.coordinator.cancel_order(high['orderId'])
+        self.coordinator.cancel_order(low['orderId'])
+        self.completed_cancellation(low['orderId'])
+        self.coordinator.release_approval(low['orderId'])
+        self.drain()
+        self.assertEqual(self.coordinator.get_order(low['orderId'])['stage'], 'SUPERSEDED')
+        self.coordinator.release_approval(high['orderId'])
+        self.drain()
+        self.assertEqual(self.coordinator.get_order(high['orderId'])['status'], 'APPROVED')
 
     def test_semantic_lock_refuses_concurrent_cancel_then_allows_later(self):
         oid = self.paused('semantic')

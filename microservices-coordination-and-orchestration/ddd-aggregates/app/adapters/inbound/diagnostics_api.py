@@ -1,4 +1,4 @@
-"""Read-only teaching endpoint: inspect publication intents (not a broker)."""
+"""Read-only diagnostic endpoint for publication intents (not a broker)."""
 from fastapi import APIRouter
 from sqlalchemy import select
 from app.infrastructure.db import SessionLocal

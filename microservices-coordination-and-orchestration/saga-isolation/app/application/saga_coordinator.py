@@ -1,16 +1,19 @@
 """CreateOrder and CancelOrder coordinators: application layer, no SQL/AMQP.
 
-For isolation experiments only, the ApproveOrder command is *durably held*
-in Order's outbox until the instructor explicitly releases it. This holds a
-message, not a SQL transaction or a RabbitMQ consumer acknowledgment.
+TEST-ONLY SCENARIO SYNCHRONIZATION (not a Saga isolation technique):
+selected ApproveOrder and compensation commands can be durably held in the
+Order Outbox until the scenario runner releases them. This controls message
+delivery timing, not transaction isolation; no SQL transaction or RabbitMQ
+consumer acknowledgement remains open while a message is held.
 """
 from uuid import uuid4
 
 from app.domain.state_machine import SagaStateMachine
 from app.domain.cancel_state_machine import CancelOrderStateMachine
+from app.domain.isolation_policy import select_isolation_mode
 from app.ports.storage import SagaStore
 
-MODES = {'normal', 'unsafe', 'semantic', 'optimistic'}
+MODES = {'normal', 'unsafe', 'semantic', 'optimistic', 'reread', 'pessimistic', 'by_value'}
 
 
 class DomainConflict(ValueError):
@@ -27,15 +30,16 @@ class SagaCoordinator:
                     ticket_failure: bool = False, isolation_mode: str = 'normal') -> dict:
         if isolation_mode not in MODES:
             raise ValueError(f'Unknown isolation mode: {isolation_mode}')
+        selected_mode = select_isolation_mode(amount) if isolation_mode == 'by_value' else isolation_mode
         order_id = str(uuid4())
         with self.store.transaction() as tx:
             tx.create_order(order_id, customer_id, amount, retry_demo, ticket_failure,
-                            isolation_mode=isolation_mode)
+                            isolation_mode=selected_mode)
             tx.enqueue('command.consumer', order_id, action='VerifyConsumer', customerId=customer_id)
             tx.record_transition(order_id, None, 'SagaStarted', 'VERIFY_CONSUMER', 'VerifyConsumer')
-        print(f'[flow] saga={order_id} START -> VERIFY_CONSUMER mode={isolation_mode}', flush=True)
+        print(f'[flow] saga={order_id} START -> VERIFY_CONSUMER mode={selected_mode}', flush=True)
         return {'orderId': order_id, 'status': 'APPROVAL_PENDING', 'stage': 'VERIFY_CONSUMER',
-                'isolationMode': isolation_mode}
+                'isolationMode': selected_mode, 'requestedIsolationMode': isolation_mode}
 
     def get_order(self, order_id: str) -> dict | None:
         with self.store.transaction() as tx:
@@ -69,24 +73,45 @@ class SagaCoordinator:
         print(f'[isolation] saga={order_id} HELD ApproveOrder released', flush=True)
         return {'orderId': order_id, 'gate': 'RELEASED'}
 
+    def cancellation_gate(self, order_id: str) -> dict | None:
+        with self.store.transaction() as tx:
+            if tx.get_order(order_id) is None:
+                return None
+            return {'orderId': order_id, 'gate': tx.cancellation_gate(order_id)}
+
+    def release_cancellation(self, order_id: str) -> dict:
+        with self.store.transaction() as tx:
+            if tx.get_order(order_id) is None:
+                raise LookupError('Order not found')
+            if tx.cancellation_gate(order_id) != 'PAUSED':
+                raise DomainConflict('Cancellation is not paused')
+            tx.release_cancellation(order_id)
+        return {'orderId': order_id, 'gate': 'RELEASED'}
+
     def cancel_order(self, order_id: str) -> dict:
         with self.store.transaction() as tx:
             row = tx.get_order_locked(order_id)
             if row is None:
                 raise LookupError('Order not found')
-            # This isolated demo only cancels after the authorization and ticket
+            # Scenario restriction: only cancel after authorization and ticket
             # have been created, avoiding unrelated incomplete-workflow cases.
             if row['status'] == 'APPROVAL_PENDING':
                 if row['isolationMode'] == 'semantic':
                     raise DomainConflict('Semantic lock: CreateOrder still in APPROVAL_PENDING')
-                if row['isolationMode'] not in ('unsafe', 'optimistic') or tx.approval_gate(order_id) != 'PAUSED':
-                    raise DomainConflict('Wait for the ApproveOrder demonstration gate')
+                if row['isolationMode'] not in ('unsafe', 'optimistic', 'reread', 'pessimistic') or tx.approval_gate(order_id) != 'PAUSED':
+                    raise DomainConflict('Wait for the scenario-control approval gate')
             elif row['status'] != 'APPROVED':
                 raise DomainConflict(f'Order status {row["status"]} cannot be cancelled')
             if tx.get_cancel_stage(order_id) is not None:
                 raise DomainConflict('Cancellation already requested')
             tx.start_cancellation(order_id)
-            tx.enqueue('command.accounting', order_id, action='VoidAuthorization', sagaType='cancel')
+            # Pessimistic View: commit a protective state BEFORE external effects.
+            # TEST-ONLY: hold the compensating command to observe that ordering.
+            hold_cancel = row['isolationMode'] == 'pessimistic'
+            if hold_cancel:
+                tx.pause_cancellation(order_id)
+            tx.enqueue('command.accounting', order_id, action='VoidAuthorization',
+                       sagaType='cancel', _hold=hold_cancel)
             tx.record_cancel_transition(order_id, None, 'CancelRequested',
                                         'VOID_AUTHORIZATION', 'VoidAuthorization')
         print(f'[isolation] saga={order_id} CANCEL START -> VOID_AUTHORIZATION', flush=True)
@@ -135,6 +160,7 @@ class SagaCoordinator:
                             data['isolationMode'] = mode
                             data['expectedVersion'] = tx.get_version(order_id)
                             if mode != 'normal':
+                                # TEST-ONLY synchronization; not an isolation countermeasure.
                                 tx.pause_approval(order_id)
                                 data['_hold'] = True
                         tx.enqueue(transition.route, order_id, **data)

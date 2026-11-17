@@ -40,7 +40,7 @@ def delete_item(order_id:str,menu_item_id:str):
     try: return order_to_dict(service.delete_item(order_id,menu_item_id))
     except LookupError as exc: raise HTTPException(404,str(exc)) from exc
     except ConcurrencyError as exc: raise HTTPException(409,str(exc)) from exc
-    except ValueError as exc: raise HTTPException(404,str(exc)) from exc
+    except ValueError as exc: raise HTTPException(400,str(exc)) from exc
 
 
 @router.post('/{order_id}/approve', response_model=OrderResponse)

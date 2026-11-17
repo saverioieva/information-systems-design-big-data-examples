@@ -23,8 +23,8 @@ class SagaStateMachine:
         ('REJECT_ORDER', 'OrderRejected'): Transition('REJECTED', None, None),
         ('APPROVE_TICKET', 'TicketApproved'): Transition('APPROVE_ORDER', 'command.order', 'ApproveOrder'),
         ('APPROVE_ORDER', 'OrderApproved'): Transition('APPROVED', None, None),
-        # Optimistic concurrency: a late CreateOrder approval is ignored after cancellation.
-        ('APPROVE_ORDER', 'OrderApprovalSkipped'): Transition('CANCELLED', None, None),
+        # The CREATE saga is superseded, not necessarily a completed CancelOrder.
+        ('APPROVE_ORDER', 'OrderApprovalSkipped'): Transition('SUPERSEDED', None, None),
     }
 
     def advance(self, current_stage: str | None, reply: str) -> Transition | None:

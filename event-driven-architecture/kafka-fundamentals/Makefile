@@ -1,12 +1,15 @@
 COMPOSE=docker compose
 KAFKA=$(COMPOSE) exec -T kafka /opt/kafka/bin
-.PHONY: up down reset logs topics partitions produce consume replay worker groups test
+.PHONY: up down reset logs topics partitions produce consume replay worker groups test ui
 up:
-	$(COMPOSE) up -d kafka
+	$(COMPOSE) up -d kafka kafka-ui
 	$(COMPOSE) run --rm topics
 	$(COMPOSE) build client
 status:
 	$(COMPOSE) ps
+ui:
+	$(COMPOSE) up -d kafka-ui
+	@echo "Kafka UI: http://localhost:8085"
 topics:
 	$(KAFKA)/kafka-topics.sh --bootstrap-server kafka:19092 --list
 partitions:

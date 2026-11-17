@@ -36,8 +36,51 @@ class OrderAggregateTests(unittest.TestCase):
     def test_rejects_invalid_item(self):
         with self.assertRaises(ValueError): OrderLineItem("X","x",10.0,-1)
         with self.assertRaises(ValueError): OrderLineItem("X","x",-1.0,1)
+    def test_state_is_only_changed_through_root(self):
+        order = self.make_order()
+        with self.assertRaises(AttributeError):
+            order.state = OrderState.APPROVED
+        self.assertEqual(order.state, OrderState.APPROVAL_PENDING)
+        order.approve()
+        self.assertEqual(order.state, OrderState.APPROVED)
+
+    def test_line_items_cannot_be_mutated_from_outside(self):
+        order = self.make_order()
+        self.assertIsInstance(order.line_items, tuple)
+        with self.assertRaises(AttributeError):
+            order.line_items.append(OrderLineItem('PASTA', 'Pasta', 4.0, 1))
+        with self.assertRaises(TypeError):
+            order.line_items[0] = OrderLineItem('PASTA', 'Pasta', 4.0, 1)
+        with self.assertRaises(AttributeError):
+            order.line_items[0].price = 0.0
+        with self.assertRaises(AttributeError):
+            order.line_items = ()
+        self.assertEqual(order.order_total, 20.0)
+
+    def test_identity_cannot_be_reassigned(self):
+        order = self.make_order()
+        with self.assertRaises(AttributeError):
+            order.id = 'OTHER'
+        with self.assertRaises(AttributeError):
+            order.consumer_id = 'OTHER'
+        with self.assertRaises(AttributeError):
+            order.restaurant_id = 'OTHER'
+
+    def test_order_copies_constructor_items(self):
+        items = [OrderLineItem('PIZZA', 'Pizza', 10.0, 2)]
+        order = Order.create('CUST_1', 'REST_1', items)
+        items.clear()
+        self.assertEqual(len(order.line_items), 1)
+
+    def test_cannot_remove_last_item(self):
+        order = self.make_order()
+        with self.assertRaisesRegex(ValueError, 'at least one item'):
+            order.remove_item_from_order('PIZZA')
+        self.assertEqual(len(order.line_items), 1)
+        self.assertEqual(order.order_total, 20.0)
+
     def test_invariant_after_approval(self):
-        order=self.make_order();order.state=OrderState.APPROVED
+        order=self.make_order();order.approve()
         with self.assertRaises(ValueError): order.add_item_to_order("PASTA","Pasta",3.0,1)
         with self.assertRaises(ValueError): order.remove_item_from_order("PIZZA")
 

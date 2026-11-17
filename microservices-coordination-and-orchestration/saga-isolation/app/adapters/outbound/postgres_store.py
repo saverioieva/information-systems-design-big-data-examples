@@ -81,10 +81,37 @@ cancel_history = Table('cancel_history', metadata,
     Column('command', String(64)),
     Column('created_at', DateTime(timezone=True), nullable=False, server_default=func.now()))
 
-# Gate is persisted, not a held RabbitMQ delivery or a long-running SQL tx.
+# TEST-ONLY synchronization controls. Not Saga isolation, a SQL row lock,
+# or a held RabbitMQ delivery; the Outbox relay skips explicitly held rows.
 approval_gates = Table('approval_gates', metadata,
     Column('order_id', String(64), ForeignKey('orders.order_id'), primary_key=True),
     Column('state', String(20), nullable=False))
+
+cancel_gates = Table('cancel_gates', metadata,
+    Column('order_id', String(64), ForeignKey('orders.order_id'), primary_key=True),
+    Column('state', String(20), nullable=False))
+
+# A narrow, independent credit ledger for the Commutative Updates experiment.
+# This is deliberately NOT a substitute for Accounting's real authorization.
+credit_balances = Table('credit_balances', metadata,
+    Column('account_id', String(64), primary_key=True),
+    Column('balance', Integer, nullable=False))
+credit_adjustments = Table('credit_adjustments', metadata,
+    Column('operation_id', String(64), primary_key=True),
+    Column('account_id', String(64), ForeignKey('credit_balances.account_id'), nullable=False),
+    Column('delta', Integer, nullable=False))
+
+# Version File is a persisted sequence/reordering buffer, NOT optimistic locking.
+version_file_states = Table('version_file_states', metadata,
+    Column('stream_id', String(64), primary_key=True),
+    Column('next_sequence', Integer, nullable=False),
+    Column('total', Integer, nullable=False))
+version_file_events = Table('version_file_events', metadata,
+    Column('stream_id', String(64), ForeignKey('version_file_states.stream_id'), primary_key=True),
+    Column('sequence', Integer, primary_key=True),
+    Column('operation', String(16), nullable=False),
+    Column('value', Integer, nullable=False),
+    Column('applied', Boolean, nullable=False, server_default='false'))
 
 tickets = Table('tickets', metadata,
     Column('order_id', String(64), primary_key=True),
@@ -95,7 +122,9 @@ authorizations = Table('authorizations', metadata,
     Column('status', String(40), nullable=False))
 
 ROLE_TABLES = {
-    'orchestrator': (orders, sagas, saga_history, cancel_sagas, cancel_history, approval_gates),
+    'orchestrator': (orders, sagas, saga_history, cancel_sagas, cancel_history, approval_gates,
+                     cancel_gates, credit_balances, credit_adjustments,
+                     version_file_states, version_file_events),
     'consumer': (),
     'kitchen': (tickets,),
     'accounting': (authorizations,),
@@ -189,13 +218,33 @@ class PostgresTransaction:
                                  .values(state='RELEASED'))
         if result.rowcount != 1:
             raise ValueError('Approval gate not paused')
-        # Outbox relay only selects non-held rows. The queued decision is now visible.
+        # TEST-ONLY scenario control: release the committed message to the relay.
+        # This is NOT a Saga isolation countermeasure.
         self.db.execute(update(outbox).where(and_(outbox.c.gate_order_id == oid,
-                                                  outbox.c.held.is_(True)))
+                                                  outbox.c.held.is_(True),
+                                                  outbox.c.routing_key == 'command.order'))
                         .values(held=False))
 
+    def pause_cancellation(self, oid):
+        self.db.execute(insert(cancel_gates).values(order_id=oid, state='PAUSED'))
+
+    def cancellation_gate(self, oid):
+        return self.db.execute(select(cancel_gates.c.state).where(
+            cancel_gates.c.order_id == oid)).scalar_one_or_none() or 'NOT_REACHED'
+
+    def release_cancellation(self, oid):
+        changed = self.db.execute(update(cancel_gates).where(and_(
+            cancel_gates.c.order_id == oid, cancel_gates.c.state == 'PAUSED'))
+            .values(state='RELEASED'))
+        if changed.rowcount != 1:
+            raise ValueError('Cancellation gate not paused')
+        self.db.execute(update(outbox).where(and_(
+            outbox.c.gate_order_id == oid, outbox.c.held.is_(True),
+            outbox.c.routing_key == 'command.accounting'))
+            .values(held=False))
+
     def unsafe_approve(self, oid):
-        # DELIBERATELY UNSAFE: only enabled for the classroom anomaly scenario.
+        # DELIBERATELY UNSAFE: only for the controlled anomaly scenario.
         result = self.db.execute(update(orders).where(orders.c.order_id == oid)
                                  .values(status='APPROVED', version=orders.c.version + 1))
         if result.rowcount != 1:
@@ -205,6 +254,14 @@ class PostgresTransaction:
         result = self.db.execute(update(orders).where(and_(
             orders.c.order_id == oid, orders.c.status == 'APPROVAL_PENDING',
             orders.c.version == expected_version))
+            .values(status='APPROVED', version=orders.c.version + 1))
+        return result.rowcount == 1
+
+    def reread_approve(self, oid):
+        # The predicate is evaluated atomically by PostgreSQL at commit time.
+        # It does not use a version captured when ApproveOrder was sent.
+        result = self.db.execute(update(orders).where(and_(
+            orders.c.order_id == oid, orders.c.status == 'APPROVAL_PENDING'))
             .values(status='APPROVED', version=orders.c.version + 1))
         return result.rowcount == 1
 
@@ -258,6 +315,95 @@ class PostgresTransaction:
                 authorizations.c.order_id == oid)).scalar_one_or_none()
             if current != 'VOIDED':
                 raise ValueError(f'Cannot void authorization for order {oid}: {current}')
+
+    def initialize_credit(self, account_id, opening_balance):
+        self.db.execute(pg_insert(credit_balances).values(
+            account_id=account_id, balance=opening_balance).on_conflict_do_nothing())
+
+    def adjust_credit(self, account_id, operation_id, delta):
+        # The INSERT is an idempotency claim: only a newly inserted operation
+        # may change the balance. Use RETURNING rather than driver rowcount,
+        # whose meaning can vary across adapters and execution options.
+        claimed = self.db.execute(
+            pg_insert(credit_adjustments).values(
+                operation_id=operation_id, account_id=account_id, delta=delta)
+            .on_conflict_do_nothing(index_elements=[credit_adjustments.c.operation_id])
+            .returning(credit_adjustments.c.operation_id)
+        ).scalar_one_or_none()
+
+        if claimed is not None:
+            # A relative SQL UPDATE is atomic. RETURNING reports the actual
+            # committed-in-transaction balance, avoiding a second SELECT.
+            balance = self.db.execute(
+                update(credit_balances)
+                .where(credit_balances.c.account_id == account_id)
+                .values(balance=credit_balances.c.balance + delta)
+                .returning(credit_balances.c.balance)
+            ).scalar_one_or_none()
+            if balance is None:
+                raise ValueError(f'Unknown credit account: {account_id}')
+            return balance
+
+        prior = self.db.execute(
+            select(credit_adjustments.c.account_id, credit_adjustments.c.delta)
+            .where(credit_adjustments.c.operation_id == operation_id)
+        ).one()
+        if prior.account_id != account_id or prior.delta != delta:
+            raise ValueError('Conflicting duplicate credit operation')
+        return self.db.execute(
+            select(credit_balances.c.balance)
+            .where(credit_balances.c.account_id == account_id)
+        ).scalar_one()
+
+    def apply_versioned(self, stream_id, sequence, operation, value):
+        # Unlike a list of additive deltas, these operations do not generally
+        # commute: SET 10 -> MULTIPLY 2 -> ADD 7 yields 27, not 20.
+        if sequence < 1:
+            raise ValueError('Version File sequence must be positive')
+        if operation not in ('SET', 'ADD', 'MULTIPLY'):
+            raise ValueError('Unsupported Version File operation')
+        self.db.execute(pg_insert(version_file_states).values(
+            stream_id=stream_id, next_sequence=1, total=0).on_conflict_do_nothing())
+        # Serializes updates to one stream: pending operations and applied state
+        # are committed together. Does not lock other streams or services.
+        state = self.db.execute(select(version_file_states.c.next_sequence,
+            version_file_states.c.total).where(version_file_states.c.stream_id == stream_id)
+            .with_for_update()).one()
+        self.db.execute(pg_insert(version_file_events).values(
+            stream_id=stream_id, sequence=sequence, operation=operation,
+            value=value, applied=False).on_conflict_do_nothing())
+        prior = self.db.execute(select(version_file_events.c.operation,
+            version_file_events.c.value).where(and_(
+            version_file_events.c.stream_id == stream_id,
+            version_file_events.c.sequence == sequence))).one()
+        if (prior.operation, prior.value) != (operation, value):
+            raise ValueError('Conflicting duplicate Version File sequence')
+
+        next_sequence, total = state.next_sequence, state.total
+        while True:
+            event = self.db.execute(select(version_file_events.c.operation,
+                version_file_events.c.value).where(and_(
+                version_file_events.c.stream_id == stream_id,
+                version_file_events.c.sequence == next_sequence))).first()
+            if event is None:
+                break
+            if event.operation == 'SET':
+                total = event.value
+            elif event.operation == 'ADD':
+                total += event.value
+            elif event.operation == 'MULTIPLY':
+                total *= event.value
+            self.db.execute(update(version_file_events).where(and_(
+                version_file_events.c.stream_id == stream_id,
+                version_file_events.c.sequence == next_sequence)).values(applied=True))
+            next_sequence += 1
+        self.db.execute(update(version_file_states).where(
+            version_file_states.c.stream_id == stream_id).values(
+            next_sequence=next_sequence, total=total))
+        buffered = self.db.execute(select(func.count()).select_from(version_file_events).where(and_(
+            version_file_events.c.stream_id == stream_id,
+            version_file_events.c.applied.is_(False)))).scalar_one()
+        return {'nextSequence': next_sequence, 'total': total, 'buffered': buffered}
 
     def amount(self, oid):
         value = self.db.execute(select(orders.c.amount).where(orders.c.order_id == oid)).scalar_one_or_none()

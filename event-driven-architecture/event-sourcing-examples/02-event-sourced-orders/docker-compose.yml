@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: eventsourcing
+      POSTGRES_PASSWORD: eventsourcing
+      POSTGRES_DB: orders_es
+    ports: ["55432:5432"]
+    volumes: ["event_store_db:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventsourcing -d orders_es"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  orders-es:
+    build: .
+    depends_on:
+      db: {condition: service_healthy}
+    environment: &postgres_env
+      PERSISTENCE_MODULE: eventsourcing.postgres
+      POSTGRES_DBNAME: orders_es
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: eventsourcing
+      POSTGRES_PASSWORD: eventsourcing
+    ports: ["8102:8000"]
+  orders-es-tests:
+    build: .
+    environment:
+      PERSISTENCE_MODULE: eventsourcing.popo
+    command: ["pytest", "tests", "-q"]
+  orders-es-integration-tests:
+    build: .
+    depends_on:
+      db: {condition: service_healthy}
+    environment: *postgres_env
+    command: ["pytest", "tests_integration", "-q"]
+  mongo:
+    image: mongo:7.0
+    volumes: ["mongo_event_demo:/data/db"]
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ping: 1}).ok' | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  idempotency-demo:
+    build: .
+    environment:
+      IDEMPOTENCY_POSTGRES_DSN: postgresql://eventsourcing:eventsourcing@db:5432/orders_es
+      IDEMPOTENCY_MONGO_URI: mongodb://mongo:27017/
+    command: ["python", "-m", "idempotency.demo", "--backend", "postgres"]
+  adminer:
+    image: adminer:4
+    depends_on: [db]
+    ports: ["8182:8080"]
+volumes:
+  event_store_db:
+  mongo_event_demo:

@@ -1,10 +1,20 @@
 # PostgreSQL CDC with Debezium, Kafka and RabbitMQ
 
-A complete but compact **Change Data Capture** lab for Chapter 5. Students can inspect **raw PostgreSQL row changes** in Kafka and compare them with **business integration events** carried through an append-only Outbox, Debezium, Kafka and a small Kafka→RabbitMQ bridge. The downstream Audit consumer demonstrates a local **Inbox** and RabbitMQ DLQ. There is no Event Sourcing in this exercise.
+A runnable **FastAPI + PostgreSQL + Debezium + Kafka + RabbitMQ** integration laboratory with **Hexagonal (Ports & Adapters) Architecture** in the Python components. It contrasts raw row-level CDC with explicit business Integration Events. A bridge forwards selected Kafka events to RabbitMQ, where an independent **SQLite Audit Inbox** records deliveries.
 
-This builds on the Chapter 4 Transactional Outbox labs. The same local transaction writes current business data and the outgoing integration-event intent; **Debezium reads the committed PostgreSQL WAL**, not a polling loop.
+This is the second independent lab in [Chapter 5 - Event-Driven Architecture](../README.md). It builds on **Chapter 4 Transactional Outbox** concepts without repeating the earlier publisher implementation. The authoritative order state remains in PostgreSQL; **this is not Event Sourcing**. MongoDB is deliberately **not** part of this lab.
 
-## Architecture overview
+## What to learn
+
+- Separate **row-level changes** (`INSERT`, `UPDATE`) from explicitly chosen **business Integration Events**.
+- Persist an order and its outgoing event intent in **one local PostgreSQL transaction**.
+- Use **Debezium logical decoding** to stream committed changes and route Outbox events.
+- Understand **Kafka topic/offset** versus **RabbitMQ topic exchange/queue** semantics.
+- Observe the bridge, **at-least-once forwarding**, persistent Inbox deduplication and dead-letter handling.
+- Identify the Domain, Application, Ports and Adapters in the Order API and message bridge.
+
+## Architecture
+
 
 ```mermaid
 flowchart LR
@@ -27,7 +37,7 @@ flowchart LR
   KP[Kafka orders.integration] -->|consumer group: orders-to-rabbit-bridge| BR[Bridge]
   BR -->|publisher connection + channel| X[RabbitMQ orders.events - topic exchange]
   X -->|order.created / order.approved| Q[audit.orders]
-  Q -->|consumer connection + channel; ACK after commit| A[Audit Inbox]
+  Q -->|consumer channel, ACK after commit| A[Audit Inbox]
   Q -.->|NACK without requeue| DLX[orders.dlx - direct]
   DLX --> DLQ[audit.orders.dlq]
 ```
@@ -46,7 +56,35 @@ flowchart LR
 
 *Only the RabbitMQ queue receives deliveries; a topic exchange routes messages and does not itself act as a queue.* The bridge and Audit consumer each have their own AMQP connection and channel. A Kafka consumer group is a different concept from an AMQP channel.
 
-## Start
+## Sequence diagram: business event delivery
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant O as Order API
+    participant P as PostgreSQL
+    participant D as Debezium Connect
+    participant K as Kafka
+    participant B as Bridge
+    participant R as RabbitMQ
+    participant A as Audit Inbox
+    C->>O: CreateOrder
+    O->>P: BEGIN transaction
+    O->>P: INSERT order and Outbox event
+    O->>P: COMMIT
+    P-->>D: Committed WAL changes
+    D->>K: Raw CDC event and routed Outbox event
+    K-->>B: Integration event
+    B->>R: Publish with confirm
+    R-->>B: Publisher confirmed
+    B->>K: Commit Kafka offset
+    R->>A: Deliver audit message
+    A->>A: Persist unique eventId
+    A-->>R: ACK after local commit
+```
+
+## Start and inspect
+
 
 Requirements: Docker Compose (recent version with `service_completed_successfully` support), Make, Python 3 and curl. This stack is heavier than the Chapter 4 RabbitMQ exercises; allow several GB of RAM.
 
@@ -62,10 +100,13 @@ make slots
 - FastAPI: <http://localhost:8004/docs>
 - Adminer: <http://localhost:8084> (PostgreSQL; Server `postgres`; Database `orders`; User/Password `demo`/`demo`)
 - Debezium Kafka Connect: <http://localhost:18083/connectors>
+- **Kafka UI:** <http://localhost:8086> (Kafbat UI; starts with `make up`, or use `make ui`)
 - RabbitMQ Management: <http://localhost:15675> (`student` / `student`)
 - Kafka from host: `localhost:29094`; Kafka in Compose: `kafka:19092`
 
-## Experiment A — Raw CDC versus business events
+In **Kafka UI → Topics**, compare `cdc_orders.public.orders` (raw row-level changes) with `orders.integration` (business integration events): inspect message key, value, partition and offset. After `make register`, use **Kafka Connect** in the same UI to inspect the `orders-raw` and `orders-outbox` connectors. Connector registration and restarts are still managed by the existing scripts; the UI is an observation tool, not a replacement for the CDC pipeline. The browser connects to port `8086`, while the UI container reaches Kafka at `kafka:19092` and Connect at `http://connect:8083`.
+
+## Scenario A - Raw CDC versus Integration Events
 
 Create one order:
 
@@ -101,7 +142,7 @@ make audit
 
 This route changes `orders` and inserts a matching `OrderApproved` publication intent in **one local SQL transaction**. The Kafka-to-Rabbit bridge and Audit consumer process both `OrderCreated` and `OrderApproved`.
 
-## Experiment B — Follow Kafka → RabbitMQ and test delivery safeguards
+## Scenario B - Kafka to RabbitMQ and delivery safeguards
 
 ```bash
 make logs         # [bridge] publish/commit; [audit] stored / duplicate
@@ -127,7 +168,19 @@ The intentionally malformed message fails Audit parsing and is dead-lettered thr
 
 Run `make slots` to observe `slot_name`, `active` and `restart_lsn`; stopped/lagging connectors can **retain WAL files** and consume disk space. In this lab `snapshot.mode=initial` handles startup snapshots; source WAL streaming continues after the snapshot. Resetting volumes destroys connector offsets and slots: intended only for exercises.
 
-## Where to read the code
+## What to observe
+
+| Observation | Raw CDC path | Outbox integration path |
+|---|---|---|
+| Origin | `orders` row change | `outbox_events` insertion |
+| Debezium connector | `orders-raw` | `orders-outbox` with Event Router |
+| Kafka topic | `cdc_orders.public.orders` | `orders.integration` |
+| Payload meaning | Storage operation / changed fields | Business fact such as `OrderCreated` |
+| RabbitMQ delivery | Not used | Bridge -> `orders.events` exchange -> `audit.orders` queue |
+| Failure control | Connector offset and WAL slot | Publisher confirm, Inbox dedupe and DLQ |
+
+## Code map
+
 
 | Directory / file | Purpose |
 |---|---|
@@ -142,7 +195,16 @@ Run `make slots` to observe `slot_name`, `active` and `restart_lsn`; stopped/lag
 | `audit/inbox.py`, `audit/main.py` | Persistent Inbox, ACK and DLQ handling |
 | `tests/` | Offline contract/unit tests (`make test`) |
 
-## Reliability, limitations and cleanup
+## Reliability and deliberate simplifications
+
+The two connectors use distinct PostgreSQL logical replication slots. These track CDC progress, **not** Kafka consumer offsets or business transaction IDs. The bridge commits a Kafka offset after RabbitMQ publisher confirmation; it can still republish after a crash. The Audit Inbox uses a unique `eventId` to prevent repeated local effects.
+
+This is an **at-least-once demonstration**, not a global distributed transaction or end-to-end exactly-once guarantee. The stack has one Kafka broker, one Connect worker, local credentials, simplified monitoring, and selected failure paths. MongoDB is only used in the separate Event-Sourced Orders **idempotency comparison**.
+
+**Slide placement:** after **CDC with PostgreSQL, Debezium and Kafka** (Chapter 5, slide 5), following Kafka Fundamentals.
+
+## Test and cleanup
+
 
 This example provides **at-least-once effects**, not a global transaction or universal exactly-once delivery. Kafka retention and broker/RabbitMQ persistence have different settings and lifecycles. The demo uses a single Kafka broker, one Connect worker, default plaintext connections and local passwords, so it is **not production-ready**. For production, handle schema evolution, connector recovery, retention/WAL growth, authentication and bridge failures.
 

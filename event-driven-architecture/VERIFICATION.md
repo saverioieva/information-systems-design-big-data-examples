@@ -1,38 +1,23 @@
-# Verification and first-run checklist
+# Verification and Classroom Readiness - Chapter 5
 
-Static and offline checks completed when packaging this block:
+The project READMEs provide expected outputs, but full stack behavior depends on the local Docker runtime, available resources and connector readiness. The packaged Python code is not claimed to have passed a full Docker end-to-end test in this environment.
 
-- `make test-local`: 23 passing tests across three labs (12 DDD + 3 Kafka Fundamentals + 8 CDC/bridge/audit).
-- YAML parsing: all three Docker Compose configurations; service dependencies and host-port collisions checked.
-- JSON parsing: both Debezium Kafka Connect connector configurations.
-- Python syntax compilation: all `.py` files.
-- DDD SQL transaction test using an in-memory SQLite test database verifies that an outbox insertion failure rolls back the corresponding Order write.
-- Kafka/RabbitMQ routing and local Audit Inbox duplicate detection tested without brokers.
+## Sanity checks by laboratory
 
-**Docker was not available in the authoring environment.** Container startup, actual PostgreSQL logical replication, Kafka Connect behavior, Kafka-to-RabbitMQ forwarding, and real AMQP dead-letter routing remain to be confirmed on a machine with Docker before classroom delivery.
+| Lab | Unit tests | Main runtime checks |
+|---|---|---|
+| Kafka Fundamentals | `make test` | `make up`, `make partitions`, `make produce COUNT=12`, `make replay LIMIT=12` |
+| CDC / Debezium | `make test` | `make up`, `make register`, `make status`, `make slots`, `make create`, `make raw COUNT=1`, `make integration COUNT=1`, `make audit` |
+| Aggregate-Only | `make test` | `make up`, `make demo`, `make inspect` |
+| Event-Sourced Orders | `make test`, `make test-integration` | `make up`, `make demo`, `make inspect`, `make inspect-snapshots`, `make idempotency-all` |
 
-## Suggested first-run smoke test
+## Troubleshooting priorities
 
-```bash
-cd kafka-fundamentals
-make up
-make produce COUNT=12
-make partitions
-make replay LIMIT=12
-make down
+- **Kafka topic command prints usage:** inspect the Compose `topics` service's startup logs and the Kafka bootstrap address; confirm broker health before running client commands.
+- **Debezium connectors fail registration:** run `make status` and inspect Kafka Connect logs; after `make up`, the Connect REST API must be healthy and PostgreSQL must have finished initialization.
+- **No CDC messages:** verify publications, replication slots and topic names. `make raw` starts from the beginning and may return an earlier event first.
+- **Unexpected duplicate RabbitMQ audit deliveries:** a bridge crash between publishing and Kafka offset commit can cause duplicates. The Audit Inbox should deduplicate by `eventId`.
+- **No MongoDB in CDC:** intentional; MongoDB is present only as a standalone inbox backend in the Event-Sourced Orders idempotency comparison.
+- **Unwanted stale state:** verify that the Aggregate-Only request carries the expected row version, whereas the Event-Sourced lab verifies the expected stream version.
 
-cd ../cdc-debezium-rabbitmq
-make up
-make register
-make status
-make create
-make raw COUNT=1
-make integration COUNT=1
-make audit
-make slots
-make poison
-make dlq
-make down
-```
-
-When experimenting with connector problems, check `docker compose logs connect` and then `make slots` before deleting volumes. `make reset` is destructive. Confirm that the bridge and audit print the same `eventId` and that the `audit.orders.dlq` message count increases after `make poison`.
+Never reset databases or broker volumes before saving any demonstration data you intend to keep. `make reset` is intentionally destructive.

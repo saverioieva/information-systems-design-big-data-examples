@@ -64,7 +64,7 @@ class NewOrder(BaseModel):
     amount: float = Field(gt=0)
     simulateRetry: bool = False
     simulateTicketFailure: bool = False
-    isolationMode: Literal['normal', 'unsafe', 'semantic', 'optimistic'] = 'normal'
+    isolationMode: Literal['normal', 'unsafe', 'semantic', 'optimistic', 'reread', 'pessimistic', 'by_value'] = 'normal'
 
 
 @asynccontextmanager
@@ -116,6 +116,24 @@ def get_cancel_history(order_id: str):
 def cancel_order(order_id: str):
     try:
         return order_api_only().cancel_order(order_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except DomainConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.get('/orders/{order_id}/cancel/gate')
+def cancellation_gate(order_id: str):
+    result = order_api_only().cancellation_gate(order_id)
+    if result is None:
+        raise HTTPException(404, 'Order not found')
+    return result
+
+
+@app.post('/orders/{order_id}/cancel/release')
+def release_cancellation(order_id: str):
+    try:
+        return order_api_only().release_cancellation(order_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except DomainConflict as exc:

@@ -61,7 +61,7 @@ class FakeTransaction:
         assert self.approval_gate(oid)=='PAUSED'
         self.s['approval_gates'][oid]='RELEASED'
         for row in self.s['outbox']:
-            if row['gate_order_id']==oid and row['held']:
+            if row['gate_order_id']==oid and row['held'] and row['routing_key']=='command.order':
                 row['held']=False
 
     def unsafe_approve(self, oid):
@@ -76,6 +76,23 @@ class FakeTransaction:
         row['status']='APPROVED'
         row['version']+=1
         return True
+
+    def reread_approve(self, oid):
+        row=self.s['orders'][oid]
+        if row['status']!='APPROVAL_PENDING':
+            return False
+        row['status']='APPROVED'
+        row['version']+=1
+        return True
+
+    def pause_cancellation(self, oid): self.s['cancel_gates'][oid]='PAUSED'
+    def cancellation_gate(self, oid): return self.s['cancel_gates'].get(oid, 'NOT_REACHED')
+    def release_cancellation(self, oid):
+        assert self.cancellation_gate(oid)=='PAUSED'
+        self.s['cancel_gates'][oid]='RELEASED'
+        for row in self.s['outbox']:
+            if row['gate_order_id']==oid and row['held'] and row['routing_key']=='command.accounting':
+                row['held']=False
 
     def get_cancel_stage(self, oid): return self.s['cancel_sagas'].get(oid)
 
@@ -108,6 +125,38 @@ class FakeTransaction:
         if value!='AUTHORIZED' and value!='VOIDED':
             raise ValueError('Authorization missing')
         self.s['authorizations'][oid]='VOIDED'
+
+    def initialize_credit(self, account_id, opening_balance):
+        self.s['credit_balances'].setdefault(account_id, opening_balance)
+
+    def adjust_credit(self, account_id, operation_id, delta):
+        existing = self.s['credit_adjustments'].get(operation_id)
+        if existing is None:
+            if account_id not in self.s['credit_balances']:
+                raise ValueError('Unknown credit account')
+            self.s['credit_adjustments'][operation_id] = (account_id, delta)
+            self.s['credit_balances'][account_id] += delta
+        elif existing != (account_id, delta):
+            raise ValueError('Conflicting duplicate credit operation')
+        return self.s['credit_balances'][account_id]
+
+    def apply_versioned(self, stream_id, sequence, operation, value):
+        if sequence < 1:
+            raise ValueError('Version File sequence must be positive')
+        if operation not in ('SET', 'ADD', 'MULTIPLY'):
+            raise ValueError('Unsupported Version File operation')
+        events = self.s['version_file_events'].setdefault(stream_id, {})
+        if sequence in events and events[sequence] != (operation, value):
+            raise ValueError('Conflicting duplicate Version File sequence')
+        events[sequence] = (operation, value)
+        state = self.s['version_file_states'].setdefault(stream_id, {'nextSequence':1,'total':0})
+        while state['nextSequence'] in events:
+            kind, amount = events[state['nextSequence']]
+            if kind == 'SET': state['total'] = amount
+            elif kind == 'ADD': state['total'] += amount
+            elif kind == 'MULTIPLY': state['total'] *= amount
+            state['nextSequence'] += 1
+        return {**state, 'buffered':sum(seq>=state['nextSequence'] for seq in events)}
 
     def amount(self, oid): return self.s['orders'][oid]['amount']
     def retry_demo(self, oid): return self.s['orders'][oid]['simulateRetry']
@@ -143,7 +192,9 @@ class FakeSagaStore:
             ('inbox',set()),('outbox',[]),('orders',{}),('sagas',{}),
             ('tickets',{}),('authorizations',{}),('command_results',{}),
             ('command_attempts',[]),('saga_history',[]),
-            ('approval_gates',{}),('cancel_sagas',{}),('cancel_history',[]))}
+            ('approval_gates',{}),('cancel_gates',{}),('cancel_sagas',{}),('cancel_history',[]),
+            ('credit_balances',{}),('credit_adjustments',{}),
+            ('version_file_states',{}),('version_file_events',{}))}
 
     def initialize(self): pass
 

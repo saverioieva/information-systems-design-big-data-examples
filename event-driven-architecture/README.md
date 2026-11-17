@@ -1,80 +1,121 @@
-# Event-Driven Architecture — Examples (Chapter 5)
+# Event-Driven Architecture - Examples (Chapter 5)
 
-Hands-on examples for **Event-Driven Architecture**, Chapter 5 of the **Information Systems Design and Big Data** course (Polytechnic University of Bari).
+Runnable examples for **Chapter 5 - Event-Driven Architecture** of the **Information Systems Design and Big Data** course (Polytechnic University of Bari). The laboratories follow the slides and use a compact **Hexagonal (Ports & Adapters)** structure wherever appropriate.
 
-The two independent laboratories follow the slides: **Apache Kafka fundamentals** (topics, partitions, consumer groups, offsets and replay), followed by **PostgreSQL Change Data Capture with Debezium, Kafka and RabbitMQ integration**. Both examples are self-contained, have their own README and Makefile, and keep the Python components in a compact **Hexagonal (Ports & Adapters)** design.
+**Four independent laboratories** are organized into two complementary tracks: **Kafka and CDC integration**, then **current-state versus event-sourced persistence**. Each has its own `README.md`, `Makefile`, Docker Compose stack and runnable examples.
 
-The DDD Aggregate and Domain Events laboratory is in [Chapter 4 — Microservices Coordination and Orchestration](../microservices-coordination-and-orchestration/ddd-aggregates/), where those topics are taught. **This block does not implement Event Sourcing.**
+The **DDD Aggregates and Domain Events** example remains in [Chapter 4 - Microservices Coordination and Orchestration](../microservices-coordination-and-orchestration/ddd-aggregates/). Chapter 5 builds on those aggregate boundaries but does **not** move the Chapter 4 lab into this folder.
 
 ## Recommended lab sequence
 
-| # | Directory | Main architectural concept |
-|---|---|---|
-| 1 | [`kafka-fundamentals/`](kafka-fundamentals/) | Apache Kafka topic, 3 partitions, message keys (`orderId`), partition offsets, independent consumer groups, work distribution, and replay within retention |
-| 2 | [`cdc-debezium-rabbitmq/`](cdc-debezium-rabbitmq/) | PostgreSQL WAL → Debezium Kafka Connect → Kafka; raw row-level CDC versus Outbox Integration Events; Kafka → RabbitMQ bridge, Audit Inbox and DLQ |
+| # | Directory | Main architectural concept | Related course topic |
+|---|---|---|---|
+| 1 | [`kafka-fundamentals/`](kafka-fundamentals/) | Topics, three partitions, keys, consumer groups, offsets and replay | **CDC with PostgreSQL, Debezium and Kafka** (slide 5); Kafka concepts from Chapter 3 |
+| 2 | [`cdc-debezium-rabbitmq/`](cdc-debezium-rabbitmq/) | PostgreSQL WAL, Debezium raw CDC vs Outbox Integration Events, Kafka-to-RabbitMQ bridge, SQLite Audit Inbox and DLQ | **CDC with PostgreSQL, Debezium and Kafka** (slide 5) |
+| 3 | [`event-sourcing-examples/01-aggregate-only/`](event-sourcing-examples/01-aggregate-only/) | `Order` invariants, PostgreSQL current-state storage and atomic optimistic version check | **The Trouble with Traditional Persistence** (slide 8) |
+| 4 | [`event-sourcing-examples/02-event-sourced-orders/`](event-sourcing-examples/02-event-sourced-orders/) | Versioned Event Store, event replay, snapshots, SQL projection and expected-version checks | **Aggregate-Only vs Event-Sourced Order** (slide 17) |
 
-## How the two labs connect to the slides
+**Additional example within Lab 4:** [`PostgreSQL vs MongoDB Idempotency`](event-sourcing-examples/02-event-sourced-orders/IDEMPOTENCY_POSTGRES_MONGODB.md). It complements **Reliable Publishing and Idempotent Consumers** (slide 13) and runs as part of Lab 4.
 
-**Lab 1: Kafka Fundamentals** — after **“Apache Kafka: A Durable Distributed Log”** and **“Kafka Consumer Groups and Partition Keys”**. Start with partitions and keyed messages, show two workers with the same group ID, and then replay with a different group ID.
+The labs run as **separate Docker Compose stacks**. The CDC example includes its own Kafka instance and does not depend on Kafka Fundamentals. Run one stack at a time to simplify resource use. Both Kafka-based stacks include **Kafbat UI** for inspecting topics, partitions, messages and consumer groups; the CDC UI also shows Debezium Kafka Connect connectors. The interfaces are bound to localhost: **<http://localhost:8085>** for Kafka Fundamentals and **<http://localhost:8086>** for CDC.
 
-**Lab 2: CDC with Debezium, Kafka and RabbitMQ** — introduce the first part after **“CDC with PostgreSQL, Debezium and Kafka”**; resume with the bridge and Audit subscriber after **“Integrating Message Queues and Event Streams”**. The previous Chapter 4 Outbox and RabbitMQ lessons are prerequisites, not topics to re-teach.
+## How the examples fit together
 
-These are **two separate Docker Compose stacks**, not one application that depends on both labs running. The CDC lab embeds its own Kafka instance. See [`SLIDE_LINKS.md`](SLIDE_LINKS.md) for links to paste into the Markdown slides.
+**Labs 1-2: Event streaming, CDC and message integration.** The first example covers keyed Kafka messages, partition ownership, offsets and replay. The second compares raw PostgreSQL row changes with explicit Outbox business facts and follows an Integration Event through Debezium, Kafka, the RabbitMQ bridge and the SQLite Audit Inbox. These examples **do not implement Event Sourcing**.
 
-## Architecture: from topics to CDC integration
+**Lab 3: Traditional persistence.** The aggregate applies business rules while SQL tables retain the **latest current state**. A stale expected version fails with HTTP **409**, preventing lost updates.
 
-```mermaid
-flowchart LR
-    P[Kafka CLI producer] --> K[(Kafka topic: orders.events)]
-    K --> G1[Group: order-processors]
-    K --> G2[Independent replay group]
-    G1 --> W1[Worker 1]
-    G1 --> W2[Worker 2]
-```
+**Lab 4: Event-Sourced persistence.** Use the *same kind of Order operations*, but reconstruct state from events instead of loading current-state rows. The example includes snapshots, a historical read, an expected-version conflict, and a separate idempotency comparison using PostgreSQL and MongoDB.
 
-The first lab demonstrates **consumer-group partition ownership**: records with the same key normally map to the same partition under a stable partitioning scheme, and a partition is consumed by only one active worker per group at a time. A different group maintains its own offsets.
+## Architecture: Kafka and CDC integration
 
 ```mermaid
 flowchart LR
-    API[Order API] --> DB[(PostgreSQL: orders + outbox)]
-    DB --> D[Debezium Kafka Connect]
-    D --> RAW[(Kafka: raw CDC)]
-    D --> EV[(Kafka: Integration Events)]
-    EV --> BR[Kafka-to-RabbitMQ bridge]
-    BR --> EX[RabbitMQ topic exchange]
-    EX --> Q[Audit queue]
-    Q --> IN[Audit consumer + Inbox]
-    Q -. failed messages .-> DLQ[Dead-letter queue]
+    Producer[Python Kafka Producer] -->|key orderId| Topic[(Kafka orders.events)]
+    Topic --> GroupA[Worker group]
+    Topic --> GroupB[Independent replay group]
+    GroupA --> Worker1[Worker 1]
+    GroupA --> Worker2[Worker 2]
 ```
 
-The second lab uses **two separate Debezium connectors**: one captures committed changes to the `orders` table as raw database-change records; the other routes rows inserted into the transactional Outbox into Kafka **Integration Events**. The bridge translates Kafka messages into RabbitMQ deliveries. The Audit consumer uses an Inbox to handle duplicate `eventId` values and demonstrates dead-letter handling.
+The Kafka example demonstrates that a partition is assigned to **at most one active member of a group at a time**, while a different group can read its own offsets independently. Topic retention determines how much history is available for replay.
+
+```mermaid
+flowchart LR
+    API[Order API] --> DB[(PostgreSQL orders and outbox_events)]
+    DB --> WAL[WAL and logical decoding]
+    WAL --> Raw[Debezium raw CDC]
+    WAL --> Router[Debezium Outbox Event Router]
+    Raw --> KRaw[(Kafka raw CDC topic)]
+    Router --> KEvt[(Kafka integration topic)]
+    KEvt --> Bridge[Kafka to RabbitMQ bridge]
+    Bridge --> Exchange[RabbitMQ topic exchange]
+    Exchange --> Queue[Audit queue]
+    Queue --> Inbox[SQLite Audit Inbox]
+    Queue -.-> DLQ[Dead-letter queue]
+```
+
+The CDC example uses **two connectors**, one for `orders` raw changes and one for `outbox_events` with Debezium's Event Router. Only the selected **Integration Event** stream is forwarded to RabbitMQ. MongoDB is **not** a consumer in this lab.
+
+## Architecture: Aggregate-Only versus Event-Sourced Orders
+
+```mermaid
+flowchart TB
+    subgraph Traditional[Example 01 - Aggregate Only]
+        D1[Order Aggregate] --> R1[Repository and Unit of Work]
+        R1 --> S1[(PostgreSQL current state)]
+    end
+    subgraph Sourcing[Example 02 - Event Sourced]
+        D2[Order Aggregate] --> R2[OrderStore adapter]
+        R2 --> S2[(PostgreSQL append-only Event Store)]
+        S2 --> Replay[Historical replay and snapshots]
+        S2 -.-> Projection[Derived SQL projection]
+    end
+```
+
+The **Aggregate-Only** approach overwrites current state (with optimistic concurrency protection). The **Event-Sourced** approach appends accepted events and reconstructs the current state from their versioned history. The two demos enforce comparable business invariants; their storage models differ.
+
+The MongoDB example in lab 4 illustrates **atomic, single-document message deduplication**. PostgreSQL demonstrates a unique processed-message marker and event append in **one local SQL transaction**. Neither backend claims globally exactly-once message delivery.
 
 ## Key architectural distinctions
 
-- **Kafka topic vs RabbitMQ topic exchange:** Kafka retains ordered, partitioned records and supports replay by offset; a RabbitMQ topic exchange routes to queues using routing keys and bindings. The term *topic* does not imply the same semantics.
-- **Offset vs replication slot:** Kafka group offsets describe the consumer's progress within topic partitions. PostgreSQL logical replication slots track a CDC client's progress in the WAL. Neither is a business-transaction identifier.
-- **CDC vs Integration Event:** An `UPDATE` to `orders.status` produces a database change record; it is **not automatically** the business event `OrderApproved`. A domain/application decision can write an explicit `integration_outbox` row, which Debezium's Outbox Event Router forwards separately.
-- **Outbox:** Business state and an outgoing publication intention are saved atomically. The relay and downstream consumers remain at least-once in effect; duplicates and failures are possible. This reuses Chapter 4's reliable-messaging theory.
-- **Event Sourcing:** Neither lab reconstructs an Order aggregate by replaying Domain Events. The Order's authoritative current state stays in SQL tables. Kafka retention/replay is not, by itself, Event Sourcing.
-- **Reliability:** The bridge uses publisher confirmation and Kafka offset tracking; the Audit consumer uses an Inbox and a dead-letter path. These mechanisms illustrate design boundaries, not end-to-end exactly-once business execution.
+- **Kafka topics versus RabbitMQ topic exchanges:** Kafka records are partitioned, retained and replayable by offset. RabbitMQ exchanges route messages to queues using bindings and routing keys.
+- **Kafka offsets versus PostgreSQL replication slots:** group offsets track progress in Kafka partitions; replication slots keep required database WAL positions. Neither is a business transaction ID.
+- **Raw CDC versus Integration Events:** an SQL `UPDATE` produces a row-change event; it is **not automatically** an `OrderApproved` business fact. The Outbox records selected business intent.
+- **Outbox/Inbox versus Event Sourcing:** atomic Outbox recording and consumer deduplication improve messaging reliability. Event Sourcing instead makes **domain-event history** authoritative for the aggregate state.
+- **Expected-version checks versus idempotency:** version checks detect concurrent writes to an aggregate. Persistent message IDs suppress duplicate effects from repeated deliveries. These are distinct safeguards.
+- **Snapshots and projections:** snapshots optimize event replay; projections are derived query models, not replacements for the authoritative Event Store.
+- **NoSQL scope:** MongoDB is used only in the lab 4 idempotency comparison, **not** in the Kafka/CDC stack, and it is **not** presented as a complete MongoDB Event Store.
 
 ## Getting started
 
-Clone the repository and run **one** lab at a time:
+Prerequisites: **Docker Compose**, `make`, `curl` and Python 3 (for selected host-side scripts). Kafka/Debezium need more RAM and initial startup time than the basic FastAPI examples. Each directory has its own ports and setup instructions.
+
+Clone the main repository:
 
 ```bash
 git clone https://github.com/saverioieva/information-systems-design-big-data-examples.git
 cd information-systems-design-big-data-examples/event-driven-architecture
+```
 
-# Lab 1: Kafka fundamentals
+### Lab 1 - Kafka Fundamentals
+
+```bash
 cd kafka-fundamentals
 make up
-make produce COUNT=12
 make partitions
+make produce COUNT=12
 make replay LIMIT=12
 make down
+```
 
-# Lab 2: Debezium, Kafka and RabbitMQ
+Kafka UI: <http://localhost:8085>. Open **Topics → orders.events** and **Consumer Groups** to inspect messages, partitions and offsets.
+
+To inspect partition ownership, start two `make worker` processes in separate terminals and publish records from a third terminal. Inspect `make groups` and `make partitions`; terminate workers with Ctrl+C.
+
+### Lab 2 - CDC with Debezium, Kafka and RabbitMQ
+
+```bash
 cd ../cdc-debezium-rabbitmq
 make up
 make register
@@ -86,33 +127,63 @@ make audit
 make down
 ```
 
-Most examples require Docker Compose, `make`, `curl`, and Python 3. Kafka and Debezium images need more resources than the Chapter 4 labs. Several independent stacks expose overlapping host ports, so **run one at a time**. Observe readiness and connector status after `make register` before running the CDC commands; see individual READMEs for troubleshooting and exact endpoints.
+Kafka UI: <http://localhost:8086>. Inspect both `cdc_orders.public.orders` and `orders.integration`, then open **Kafka Connect** to view connector status after registration.
 
-### Lab 1: consumer groups and replay
+Then create a direct SQL change with `make db-update` (raw CDC only), and optionally the failure path with `make poison` and `make dlq`. `make register` waits for Kafka Connect and should report both tasks as `RUNNING`.
 
-In two separate terminals inside `kafka-fundamentals/`, run `make worker` to start two consumers with the **same** group ID (`shared-workers`), then publish `make produce COUNT=12` from a third terminal. Use `make groups` and `make partitions` to inspect the group and partition assignments. To read retained records independently, run `make replay LIMIT=12` (a new group ID). Stop the workers with Ctrl+C.
+### Lab 3 - Aggregate-Only Order Service
 
-### Lab 2: observe CDC, then the bridge
+```bash
+cd ../event-sourcing-examples/01-aggregate-only
+make up
+make demo
+make inspect
+make down
+```
 
-Run `make create` to write an Order through the application; inspect `make raw COUNT=1` and `make integration COUNT=1` to contrast a Debezium change envelope with a selected Integration Event. Then run `make db-update` to make a direct SQL update, and observe that **raw CDC** sees it without creating a new domain Integration Event. Finally, inspect `make audit`, `make slots` and, when appropriate, the failure demonstration `make poison` / `make dlq`.
+The script creates an Order, mutates current-state rows, attempts a stale expected-version write, and shows the resulting **409 Conflict**.
+
+### Lab 4 - Event-Sourced Orders and idempotency comparison
+
+```bash
+cd ../02-event-sourced-orders
+make up
+make demo
+make inspect
+make inspect-snapshots
+make idempotency-postgres
+make idempotency-mongo
+make down
+```
+
+The Event-Sourced demo shows historical version retrieval and an expected-version conflict. The *separate* Inbox demonstrations deliver two message IDs twice each, verifying that only two business effects persist.
 
 ## What to observe
 
-1. In Kafka, compare topic partition IDs and increasing offsets. Verify that ordering is **per partition**, not a global ordering of the whole topic.
-2. Compare a single consumer group with independent groups: adding subscribers to the same group divides partitions; a new group can reread retained records.
-3. In Debezium, identify the committed PostgreSQL row change and the separate Outbox integration-event payload.
-4. Follow the Integration Event's `eventId` from Kafka through RabbitMQ to the Audit Inbox, noting where a delivery might be repeated.
-5. Distinguish Kafka consumer offsets, PostgreSQL replication slot LSNs, RabbitMQ ACKs and business-state SQL commits.
+1. Kafka ordering and offsets are **per partition**, while independent consumer groups have separate progress.
+2. The CDC pipeline carries **raw database changes** separately from explicit **business Integration Events**.
+3. The bridge and subscriber illustrate **at-least-once delivery**, publisher confirmation and durable Inbox deduplication.
+4. Aggregate-Only stores the latest `orders` / `order_line_items` state with a numeric version.
+5. Event-Sourced Orders stores **versioned append-only events**; snapshots and the SQL projection are derived artifacts.
+6. PostgreSQL and MongoDB implement idempotency through **different local atomicity boundaries**.
 
-## Scope and verification
+## Hexagonal Architecture: Domain, Application, Ports and Adapters
 
-These are **teaching exercises, not production-ready templates**. Local credentials, simplified observability and selected failure paths are deliberate. The two labs have offline Python unit tests and validated configuration files; full broker-to-database Docker end-to-end execution still needs verification in the target classroom environment. Consult [`VERIFICATION.md`](VERIFICATION.md) and each lab's README before demonstrating.
+| Lab | Domain / Application | Port and outbound adapter | Inbound entry point |
+|---|---|---|---|
+| Kafka Fundamentals | `app/domain/`, `app/application/` | `app/ports/event_bus.py`, `app/adapters/outbound/kafka_producer.py` | `app/main.py` CLI |
+| CDC / Debezium | `app/domain/`, `app/application/`, `bridge/application/` | `app/ports/storage.py`, `app/adapters/outbound/postgres_store.py`, bridge publisher port and RabbitMQ adapter | FastAPI plus Kafka bridge and Audit consumer |
+| Aggregate-Only | `app/domain/`, `app/application/` | Repository / Unit of Work ports and SQLAlchemy adapters | FastAPI adapter in `app/adapters/inbound/` |
+| Event-Sourced Orders | `app/domain/`, `app/application/` | `OrderStore` and MessageInbox ports; Event Store, PostgreSQL Inbox and MongoDB Inbox adapters | FastAPI adapter and standalone idempotency demo |
 
-## Architecture: Domain, Application, Ports & Adapters
+**Pragmatic exception:** the Event-Sourced aggregate uses the Python `eventsourcing` library's base class and event decorator. This is documented in its own README rather than hidden behind a claim of fully framework-independent domain code.
 
-- `kafka-fundamentals/`: Pure event-record contract in `app/domain/`, publisher use case in `app/application/`, producer port in `app/ports/` and Kafka CLI/`confluent-kafka` outbound adapter.
-- `cdc-debezium-rabbitmq/`: Order use cases and domain event contract, PostgreSQL persistence adapter, Kafka-to-RabbitMQ bridge with a pure routing function and publisher port, and an Audit subscriber with a local idempotent Inbox.
+## Scope, verification and cleanup
 
-## Related Chapter 4 example
+These are **teaching demonstrations, not production-ready service templates**. Local credentials, single-node infrastructure, selected failure paths, intentionally simple monitoring, and limited transaction boundaries are deliberate. Run `make test` in each lab to execute its available local tests; Event-Sourced Orders also has `make test-integration` for PostgreSQL-backed checks.
 
-[DDD Aggregates and Domain Events](../microservices-coordination-and-orchestration/ddd-aggregates/) shows **why** an Aggregate records business facts and how current-state persistence is separated from a publication intent. Chapter 5 starts with **how records are carried and consumed** by Kafka, then shows **how database changes are streamed** with Debezium.
+The configurations and source are packaged as runnable examples, but **full Docker end-to-end verification must be performed on the teaching machine** before class. Read [`VERIFICATION.md`](VERIFICATION.md) for verification commands and known boundaries. Each lab has `make down`; `make reset` additionally deletes volumes and should only be used intentionally.
+
+## Related Chapter 4 laboratory
+
+[DDD Aggregates and Domain Events](../microservices-coordination-and-orchestration/ddd-aggregates/) demonstrates Aggregate Roots, local business invariants, Repository, Unit of Work and the relation between domain facts and Outbox intents. It stays **in Chapter 4**. Chapter 5 proceeds from **event transport and CDC** to **Event Sourcing as an alternative persistence model**.

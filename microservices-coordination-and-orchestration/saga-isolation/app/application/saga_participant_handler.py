@@ -77,6 +77,10 @@ class SagaParticipantHandler:
                 elif mode == 'optimistic':
                     applied = tx.optimistic_approve(oid, int(message['expectedVersion']))
                     result = 'OrderApproved' if applied else 'OrderApprovalSkipped'
+                elif mode in ('reread', 'pessimistic'):
+                    # Reread Value: check current status at update time, not when queued.
+                    applied = tx.reread_approve(oid)
+                    result = 'OrderApproved' if applied else 'OrderApprovalSkipped'
                 else:
                     tx.apply_order_status(oid, 'APPROVED')
                     result = 'OrderApproved'

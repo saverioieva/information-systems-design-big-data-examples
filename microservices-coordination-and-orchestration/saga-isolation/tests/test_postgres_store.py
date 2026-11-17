@@ -4,7 +4,7 @@ Run the optional integration test using an EMPTY disposable PostgreSQL database:
   TEST_DATABASE_URL=postgresql+psycopg://demo:demo@localhost:<published-port>/test_saga_db make test
 To run it from the host, publish an unused PostgreSQL port in Docker Compose
 (e.g. postgres_order: 5436:5432), create a disposable test_saga_db, and pass
-its URL. Normal classroom tests do not require a running database.
+its URL. The default offline tests do not require a running database.
 """
 import os
 import unittest
@@ -15,6 +15,8 @@ from sqlalchemy.schema import CreateTable
 from app.adapters.outbound.postgres_store import (
     PostgresSagaStore, COMMON_TABLES, ROLE_TABLES, command_attempts,
     command_results, orders, sagas, saga_history, inbox, outbox,
+    cancel_gates, credit_balances, credit_adjustments,
+    version_file_events, version_file_states,
 )
 
 
@@ -35,6 +37,13 @@ class PostgresSchemaTests(unittest.TestCase):
         self.assertIn('retry_demo',orders.c)
         self.assertIn('ticket_failure',orders.c)
         self.assertIn('attempt',command_attempts.c)
+        self.assertIn('held', outbox.c)
+        self.assertIn('state', cancel_gates.c)
+        self.assertIn('delta', credit_adjustments.c)
+        self.assertIn('next_sequence', version_file_states.c)
+        self.assertIn('applied', version_file_events.c)
+        self.assertIn('operation', version_file_events.c)
+        self.assertIn('value', version_file_events.c)
 
 
 @unittest.skipUnless(os.environ.get('TEST_DATABASE_URL'),
@@ -120,4 +129,54 @@ class IsolationPostgresIntegrationTests(unittest.TestCase):
                 conn.execute(delete(sagas).where(sagas.c.order_id == oid))
                 conn.execute(delete(outbox).where(outbox.c.gate_order_id == oid))
                 conn.execute(delete(orders).where(orders.c.order_id == oid))
+            store.engine.dispose()
+
+
+@unittest.skipUnless(os.environ.get('TEST_DATABASE_URL'),
+                     'Set TEST_DATABASE_URL to a disposable PostgreSQL database to run')
+class CountermeasurePostgresIntegrationTests(unittest.TestCase):
+    def test_commutative_demo_uses_real_postgres(self):
+        # End-to-end adapter regression for `make commutative`, rather than
+        # only a fake transaction; requires TEST_DATABASE_URL.
+        from app.demo_countermeasures import run_commutative
+        from contextlib import redirect_stdout
+        from io import StringIO
+        store = PostgresSagaStore('orchestrator', os.environ['TEST_DATABASE_URL'])
+        store.initialize()
+        output = StringIO()
+        try:
+            with redirect_stdout(output):
+                run_commutative(store)
+            self.assertIn('COMMUTATIVE: +25,-10 -> 115', output.getvalue())
+        finally:
+            store.engine.dispose()
+
+    def test_commutative_and_version_file_are_durable_and_idempotent(self):
+        from sqlalchemy import delete
+        store = PostgresSagaStore('orchestrator', os.environ['TEST_DATABASE_URL'])
+        store.initialize()
+        account_id, stream_id = str(uuid4()), str(uuid4())
+        try:
+            with store.transaction() as tx:
+                tx.initialize_credit(account_id, 100)
+                self.assertEqual(tx.adjust_credit(account_id, 'credit-' + account_id, 25), 125)
+                self.assertEqual(tx.adjust_credit(account_id, 'credit-' + account_id, 25), 125)
+                self.assertEqual(tx.adjust_credit(account_id, 'debit-' + account_id, -10), 115)
+                self.assertEqual(tx.apply_versioned(stream_id, 3, 'ADD', 7)['buffered'], 1)
+                self.assertEqual(tx.apply_versioned(stream_id, 1, 'SET', 10)['total'], 10)
+            # Across transactions, buffered seq 3 is still persisted.
+            with store.transaction() as tx:
+                self.assertEqual(tx.apply_versioned(stream_id, 2, 'MULTIPLY', 2),
+                                 {'nextSequence': 4, 'total': 27, 'buffered': 0})
+                self.assertEqual(tx.apply_versioned(stream_id, 3, 'ADD', 7)['total'], 27)
+        finally:
+            with store.engine.begin() as conn:
+                conn.execute(delete(credit_adjustments).where(
+                    credit_adjustments.c.account_id == account_id))
+                conn.execute(delete(credit_balances).where(
+                    credit_balances.c.account_id == account_id))
+                conn.execute(delete(version_file_events).where(
+                    version_file_events.c.stream_id == stream_id))
+                conn.execute(delete(version_file_states).where(
+                    version_file_states.c.stream_id == stream_id))
             store.engine.dispose()

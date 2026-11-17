@@ -1,8 +1,13 @@
+"""DDD tactical model: one Order aggregate protects its own invariants.
 
-from dataclasses import dataclass, field
+Persistence reads the public properties, and reconstructs an Order using the
+constructor. State transitions and line-item changes go through root methods.
+"""
+
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from uuid import uuid4
 
 
@@ -39,6 +44,7 @@ class OrderApproved:
 
 @dataclass(frozen=True)
 class OrderLineItem:
+    """Immutable value-like object belonging to the Order aggregate."""
     menu_item_id: str
     name: str
     price: float
@@ -55,19 +61,62 @@ class OrderLineItem:
         return self.price * self.quantity
 
 
-@dataclass
 class Order:
-    id: str
-    consumer_id: str
-    restaurant_id: str
-    line_items: List[OrderLineItem] = field(default_factory=list)
-    state: OrderState = OrderState.APPROVAL_PENDING
-    row_version: Optional[int] = None  # explicit SQL version_id; not PostgreSQL xmin
-    # Pending domain notifications are collected by the application layer.
-    _pending_events: List[OrderCreated | OrderApproved] = field(default_factory=list, repr=False, compare=False)
+    """Aggregate Root: no writable public state or line-item collection.
+
+    A tuple view prevents callers from appending, replacing or deleting child
+    items without passing through the root's methods. Child items themselves
+    are immutable. Python's underscore convention marks the backing fields
+    private; it is not an access-control security mechanism.
+    """
+
+    def __init__(
+        self,
+        id: str,
+        consumer_id: str,
+        restaurant_id: str,
+        line_items: Sequence[OrderLineItem] = (),
+        state: OrderState = OrderState.APPROVAL_PENDING,
+        row_version: Optional[int] = None,
+    ):
+        self._id = id
+        self._consumer_id = consumer_id
+        self._restaurant_id = restaurant_id
+        self._line_items = list(line_items)  # take ownership; never keep caller's list
+        self._state = OrderState(state)
+        self.row_version = row_version  # persistence concurrency metadata, not business state
+        self._pending_events: List[OrderCreated | OrderApproved] = []
+
+    def __repr__(self) -> str:
+        return (
+            f"Order(id={self.id!r}, consumer_id={self.consumer_id!r}, "
+            f"restaurant_id={self.restaurant_id!r}, line_items={self.line_items!r}, "
+            f"state={self.state!r}, row_version={self.row_version!r})"
+        )
+
+    @property
+    def id(self) -> str:
+        return self._id
+
+    @property
+    def consumer_id(self) -> str:
+        return self._consumer_id
+
+    @property
+    def restaurant_id(self) -> str:
+        return self._restaurant_id
+
+    @property
+    def line_items(self) -> tuple[OrderLineItem, ...]:
+        """Read-only snapshot of children (no mutable collection escapes)."""
+        return tuple(self._line_items)
+
+    @property
+    def state(self) -> OrderState:
+        return self._state
 
     @classmethod
-    def create(cls, consumer_id: str, restaurant_id: str, items: List[OrderLineItem]):
+    def create(cls, consumer_id: str, restaurant_id: str, items: Sequence[OrderLineItem]):
         if not items:
             raise ValueError("Order must have at least one item")
         if not consumer_id or not restaurant_id:
@@ -76,7 +125,7 @@ class Order:
             id=str(uuid4()),
             consumer_id=consumer_id,
             restaurant_id=restaurant_id,
-            line_items=list(items),
+            line_items=items,
         )
         order._pending_events.append(OrderCreated(
             event_id=str(uuid4()),
@@ -88,11 +137,11 @@ class Order:
         return order
 
     def approve(self):
-        if self.state != OrderState.APPROVAL_PENDING:
+        if self._state != OrderState.APPROVAL_PENDING:
             raise ValueError("Only a pending order can be approved")
-        if not self.line_items or self.order_total <= 0:
+        if not self._line_items or self.order_total <= 0:
             raise ValueError("An approved order must have a positive total")
-        self.state = OrderState.APPROVED
+        self._state = OrderState.APPROVED
         self._pending_events.append(OrderApproved(
             event_id=str(uuid4()),
             aggregate_type="Order",
@@ -102,43 +151,40 @@ class Order:
         ))
 
     def collect_domain_events(self) -> List[OrderCreated | OrderApproved]:
-        """Return/clear new domain facts; the UoW may persist integration intents.
+        """Return/clear new domain facts for the Unit of Work to persist as intents.
 
-        Current Order state is persisted by its repository.
+        Current Order state is still persisted by the repository, not an event store.
         """
         events = list(self._pending_events)
         self._pending_events.clear()
         return events
 
     def add_item_to_order(self, menu_item_id: str, name: str, price: float, quantity: int):
-        if self.state != OrderState.APPROVAL_PENDING:
+        if self._state != OrderState.APPROVAL_PENDING:
             raise ValueError("Cannot modify a non-pending order")
-        if quantity <= 0 or price < 0:
-            raise ValueError("Quantity must be positive and price nonnegative")
-
-        for idx, item in enumerate(self.line_items):
+        # Validate the replacement/new value before touching the aggregate.
+        new_item = OrderLineItem(menu_item_id, name, price, quantity)
+        for idx, item in enumerate(self._line_items):
             if item.menu_item_id == menu_item_id:
-                self.line_items[idx] = OrderLineItem(
+                self._line_items[idx] = OrderLineItem(
                     menu_item_id=menu_item_id,
                     name=name,
                     price=price,
                     quantity=item.quantity + quantity,
                 )
                 return
-
-        self.line_items.append(
-            OrderLineItem(menu_item_id=menu_item_id, name=name, price=price, quantity=quantity)
-        )
+        self._line_items.append(new_item)
 
     def remove_item_from_order(self, menu_item_id: str):
-        if self.state != OrderState.APPROVAL_PENDING:
+        if self._state != OrderState.APPROVAL_PENDING:
             raise ValueError("Cannot modify a non-pending order")
-
-        new_items = [li for li in self.line_items if li.menu_item_id != menu_item_id]
-        if len(new_items) == len(self.line_items):
+        remaining = [item for item in self._line_items if item.menu_item_id != menu_item_id]
+        if len(remaining) == len(self._line_items):
             raise ValueError("Line item not found")
-        self.line_items = new_items
+        if not remaining:
+            raise ValueError("Order must have at least one item")
+        self._line_items = remaining
 
     @property
     def order_total(self) -> float:
-        return sum(li.subtotal for li in self.line_items)
+        return sum(li.subtotal for li in self._line_items)

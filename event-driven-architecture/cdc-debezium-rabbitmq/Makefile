@@ -1,6 +1,6 @@
 COMPOSE=docker compose
 KAFKA=$(COMPOSE) exec -T kafka /opt/kafka/bin
-.PHONY: up register status create orders outbox raw integration approve db-update kafka-topics rabbit-queues audit poison dlq slots logs test down reset
+.PHONY: up register status create orders outbox raw integration approve db-update kafka-topics rabbit-queues audit poison dlq slots logs test down reset ui
 up:
 	$(COMPOSE) up -d --build
 register:
@@ -8,6 +8,9 @@ register:
 status:
 	$(COMPOSE) ps
 	python3 scripts/register_connectors.py status
+ui:
+	$(COMPOSE) up -d kafka-ui
+	@echo "Kafka UI: http://localhost:8086"
 create:
 	curl -fsS -X POST http://localhost:8004/orders -H 'Content-Type: application/json' -d '{"amount":42.50}'
 approve:
