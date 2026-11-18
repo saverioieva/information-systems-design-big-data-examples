@@ -18,17 +18,53 @@ This is the second independent lab in [Chapter 5 - Event-Driven Architecture](..
 
 ```mermaid
 flowchart LR
-  Client[Client / REST] --> API[Order API]
-  API --> DB[(PostgreSQL: orders + outbox_events)]
-  DB -->|WAL / pgoutput| Raw[Debezium: orders-raw]
-  DB -->|WAL / pgoutput| Outbox[Debezium: orders-outbox]
-  Raw --> KRaw[Kafka: cdc_orders.public.orders]
-  Outbox --> KEvents[Kafka: orders.integration]
-  KEvents --> B[Kafka-to-Rabbit bridge]
-  B --> R[RabbitMQ: orders.events]
-  R --> Q[audit.orders queue]
-  Q --> A[Audit consumer + private SQLite Inbox]
+    API["Order API"] --> TX["One local SQL transaction"]
+    SQL["Direct SQL UPDATE"] -->|"updates orders only"| ORD
+
+    subgraph PG["PostgreSQL - authoritative current state and Outbox"]
+        direction TB
+        ORD[("public.orders<br/>current-state rows")]
+        OUT[("public.outbox_events<br/>publication intents")]
+    end
+    TX -->|"persist order state"| ORD
+    TX -->|"persist selected business event intent"| OUT
+
+    subgraph RAW["Path A - RAW CDC: database changes"]
+        direction LR
+        DR["Debezium orders-raw<br/>raw_orders_slot"]
+        KR[("Kafka<br/>cdc_orders.public.orders")]
+        DR -->|"change envelope: INSERT or UPDATE"| KR
+    end
+
+    subgraph EVENTS["Path B - INTEGRATION EVENTS: business facts"]
+        direction LR
+        DE["Debezium orders-outbox<br/>integration_outbox_slot"]
+        SMT["Outbox Event Router SMT"]
+        KE[("Kafka<br/>orders.integration")]
+        BR["Kafka to RabbitMQ bridge"]
+        EX["RabbitMQ topic exchange<br/>orders.events"]
+        Q["Queue: audit.orders"]
+        AUD[("Audit consumer<br/>SQLite Inbox")]
+        DE --> SMT -->|"OrderCreated / OrderApproved"| KE
+        KE --> BR --> EX --> Q --> AUD
+    end
+
+    ORD -->|"WAL via pgoutput"| DR
+    OUT -->|"WAL via pgoutput"| DE
+
+    classDef source fill:#edf5ff,stroke:#427cc7,color:#163b66
+    classDef raw fill:#fff0db,stroke:#c07b28,color:#75470f
+    classDef integration fill:#e5f6eb,stroke:#429268,color:#17533b
+    classDef stream fill:#f2ebff,stroke:#8260ba,color:#4e3479
+    class API,TX,SQL,ORD,OUT source
+    class DR,KR raw
+    class DE,SMT,BR,EX,Q,AUD integration
+    class KE stream
 ```
+
+**Two different event semantics:** `orders-raw` reads changes to `public.orders` and produces **storage-level CDC records** (`INSERT` / `UPDATE`). `orders-outbox` reads `public.outbox_events`, applies Debezium's **Outbox Event Router**, and emits **selected business integration events**. The two connectors use different PostgreSQL publications and replication slots, but both stream committed WAL changes from the same database.
+
+**What the diagram proves:** `make create` writes an Order row and its Outbox intent in **one local transaction**, so both paths receive data. `make db-update` updates **only** `orders`, so only the raw CDC path receives a new event. RabbitMQ and the SQLite Audit Inbox receive **only integration events** forwarded from `orders.integration`; the raw CDC topic is not bridged.
 
 ### Message topology
 
@@ -201,7 +237,6 @@ The two connectors use distinct PostgreSQL logical replication slots. These trac
 
 This is an **at-least-once demonstration**, not a global distributed transaction or end-to-end exactly-once guarantee. The stack has one Kafka broker, one Connect worker, local credentials, simplified monitoring, and selected failure paths. MongoDB is only used in the separate Event-Sourced Orders **idempotency comparison**.
 
-**Slide placement:** after **CDC with PostgreSQL, Debezium and Kafka** (Chapter 5, slide 5), following Kafka Fundamentals.
 
 ## Test and cleanup
 
