@@ -36,26 +36,56 @@ Requires Docker with the Compose plugin and `make`. Python 3.10+ is needed only 
 
 ```mermaid
 flowchart LR
-    CLI[Make commands] --> APP[Publishing use case]
-    APP --> PORT[EventProducer port]
-    PORT --> ADAPTER[Kafka producer adapter]
-    ADAPTER -->|key = orderId| TOPIC
-    subgraph TOPIC[Kafka topic orders.events]
-        P0[Partition 0]
-        P1[Partition 1]
-        P2[Partition 2]
+    PRODUCER["Python producer<br/>record key = orderId"] --> PARTITIONER{"Key-based<br/>partitioner"}
+    RULE["Each record enters exactly ONE partition<br/>Same key stays in the same partition"]
+    PARTITIONER -.-> RULE
+
+    subgraph TOPIC["Kafka topic: orders.events"]
+        direction TB
+        P0["Partition 0<br/>ordered offsets 0, 1, ..."]
+        P1["Partition 1<br/>ordered offsets 0, 1, ..."]
+        P2["Partition 2<br/>ordered offsets 0, 1, ..."]
     end
-    TOPIC --> A[Group order-processors]
-    TOPIC --> B[Group fulfillment]
-    TOPIC --> C[Group analytics]
-    TOPIC --> D[Independent replay group]
-    A --> A1[One consumer]
-    B --> B1[Fulfillment worker 1]
-    B --> B2[Fulfillment worker 2]
-    C --> C1[Analytics worker]
+    PARTITIONER -->|"possible destination"| P0
+    PARTITIONER -->|"possible destination"| P1
+    PARTITIONER -->|"possible destination"| P2
+
+    subgraph F["Consumer group: fulfillment"]
+        direction TB
+        F1["Worker 1<br/>example: partitions 0 + 1"]
+        F2["Worker 2<br/>example: partition 2"]
+        FO[("Committed offsets<br/>fulfillment: per partition")]
+        F1 --> FO
+        F2 --> FO
+    end
+
+    subgraph A["Consumer group: analytics"]
+        direction TB
+        A1["Worker 1<br/>all 3 partitions"]
+        AO[("Committed offsets<br/>analytics: per partition")]
+        A1 --> AO
+    end
+
+    P0 --> F1
+    P1 --> F1
+    P2 --> F2
+    P0 --> A1
+    P1 --> A1
+    P2 --> A1
+
+    classDef source fill:#edf5ff,stroke:#427cc7,color:#163b66
+    classDef kafka fill:#fff5d9,stroke:#bb891d,color:#65450d
+    classDef worker fill:#e7f7ee,stroke:#43966e,color:#15553d
+    classDef offset fill:#f1eaff,stroke:#8660b6,color:#513477
+    class PRODUCER,PARTITIONER,RULE source
+    class P0,P1,P2 kafka
+    class F1,F2,A1 worker
+    class FO,AO offset
 ```
 
-The diagram shows that multiple groups can consume **the same retained topic records at the same time**. For example, both `fulfillment` and `analytics` receive every record (within each group, workers share partitions). Partition assignments are *within* each group, and each group has its own committed offsets. The producer's key determines one partition for each record; it does **not** broadcast a record to all three partitions.
+**Read the diagram from left to right:** the producer uses `orderId` as a key, so **each record is appended to exactly one partition**. The three partition arrows represent possible destinations, **not three copies of a record**. Records sharing a key use the same partition with this topic configuration; offsets and ordering are scoped to an individual partition.
+
+Both `fulfillment` and `analytics` subscribe to **all three partitions independently**. In `fulfillment`, two workers split partition ownership; in `analytics`, the single worker can own all three. **The particular 2+1 partition assignment drawn for `fulfillment` is illustrative, not guaranteed**: it may change with consumer membership and rebalances. Each group commits its **own offsets per topic partition**, independent of the other group's progress. See Step 8 to reproduce this setup and inspect the actual assignments in Kafka UI.
 
 ## Complete walkthrough
 
