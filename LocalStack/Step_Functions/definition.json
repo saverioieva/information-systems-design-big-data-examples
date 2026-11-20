@@ -1,0 +1,19 @@
+{
+	"Comment": "Create bucket and list buckets",
+    "StartAt": "CreateBucket",
+    "States": {
+        "CreateBucket": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:createBucket",
+            "Parameters": {
+				"Bucket": "new-sfn-bucket"
+            },
+			"Next": "ListBuckets"
+        },
+        "ListBuckets": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:listBuckets",
+            "End": true
+        }
+    }
+}

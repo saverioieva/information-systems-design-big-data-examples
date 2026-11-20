@@ -1,0 +1,11 @@
+{
+  "orderId": "12345",
+  "customer": {
+    "name": "Jane Doe",
+    "email": "jane.doe@example.com"
+  },
+  "items": [
+    {"productId": "A123", "quantity": 1},
+    {"productId": "B456", "quantity": 2}
+  ]
+}

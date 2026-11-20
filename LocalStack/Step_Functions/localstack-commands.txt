@@ -1,0 +1,14 @@
+Create Step function: awslocal stepfunctions create-state-machine --name "CreateAndListBuckets" --definition file://definition.json --role-arn "arn:aws:iam::000000000000:role/stepfunctions-role"
+
+Execute: awslocal stepfunctions start-execution --state-machine-arn "arn:aws:states:us-east-1:000000000000:stateMachine:CreateAndListBuckets"
+
+Describe execution: awslocal stepfunctions describe-execution --execution-arn "arn:aws:states:us-east-1:000000000000:execution:CreateAndListBuckets:0d580c0c-0fda-4dc5-b05d-0ccad37d6c59"
+
+---------------------------------
+ZIP lambda: Compress-Archive -Path .\lambda.js -DestinationPath .\function.zip
+
+Upload lambda: awslocal lambda create-function --function-name generator --runtime nodejs16.x --handler lambda_generator.lambda_handler --timeout 10 --memory-size 128 --zip-file fileb://function.zip --role arn:aws:iam::000000000000:role/lambda-demo
+
+Create step: awslocal stepfunctions create-state-machine --name step-demo --definition file://definition_lambda.json --role-arn arn:aws:iam::000000000000:role/step-function-lambda
+
+Start execution step: awslocal stepfunctions start-execution --state-machine-arn arn:aws:states:us-east-1:000000000000:stateMachine:step-demo --input file://input.json
