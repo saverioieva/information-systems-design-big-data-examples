@@ -2,7 +2,7 @@
 
 A runnable **FastAPI + PostgreSQL** Event-Sourced Order service with a **Hexagonal (Ports & Adapters) application layer**. The authoritative order state is reconstructed from a **versioned append-only event stream**, optionally accelerated by snapshots. The demo also shows expected-version conflicts, a derived SQL projection, and a **separate PostgreSQL vs MongoDB idempotent-processing example**.
 
-This is the second persistence comparison laboratory in [Chapter 5 - Event-Driven Architecture](../../README.md). Pair it with [Example 01 - Aggregate-Only](../01-aggregate-only/) to contrast **updating current-state rows** with **appending events**. The MongoDB adapter is *not* a complete MongoDB Event Store.
+This is the second persistence comparison laboratory in [Chapter 5 - Event-Driven Architecture](../README.md). Pair it with [Aggregate-Only](../aggregate-only/) to contrast **updating current-state rows** with **appending events**. The MongoDB adapter is *not* a complete MongoDB Event Store.
 
 ## What to learn
 

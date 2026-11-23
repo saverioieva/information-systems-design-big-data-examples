@@ -2,7 +2,7 @@
 
 Runnable examples for **Chapter 5 - Event-Driven Architecture** of the **Information Systems Design and Big Data** course (Polytechnic University of Bari). The laboratories follow the slides and use a compact **Hexagonal (Ports & Adapters)** structure wherever appropriate.
 
-**Four independent laboratories** are organized into two complementary tracks: **Kafka and CDC integration**, then **current-state versus event-sourced persistence**. Each has its own `README.md`, `Makefile`, Docker Compose stack and runnable examples.
+**Six independent laboratories** are organized into two complementary tracks: **Kafka and CDC integration**, then **current-state versus event-sourced persistence**. Each has its own `README.md`, `Makefile`, Docker Compose stack and runnable examples.
 
 The **DDD Aggregates and Domain Events** example remains in [Chapter 4 - Microservices Coordination and Orchestration](../microservices-coordination-and-orchestration/ddd-aggregates/). Chapter 5 builds on those aggregate boundaries but does **not** move the Chapter 4 lab into this folder.
 
@@ -12,10 +12,12 @@ The **DDD Aggregates and Domain Events** example remains in [Chapter 4 - Microse
 |---|---|---|---|
 | 1 | [`kafka-fundamentals/`](kafka-fundamentals/) | Topics, three partitions, keys, consumer groups, offsets and replay | **CDC with PostgreSQL, Debezium and Kafka** (slide 5); Kafka concepts from Chapter 3 |
 | 2 | [`cdc-debezium-rabbitmq/`](cdc-debezium-rabbitmq/) | PostgreSQL WAL, Debezium raw CDC vs Outbox Integration Events, Kafka-to-RabbitMQ bridge, SQLite Audit Inbox and DLQ | **CDC with PostgreSQL, Debezium and Kafka** (slide 5) |
-| 3 | [`event-sourcing-examples/01-aggregate-only/`](event-sourcing-examples/01-aggregate-only/) | `Order` invariants, PostgreSQL current-state storage and atomic optimistic version check | **The Trouble with Traditional Persistence** (slide 8) |
-| 4 | [`event-sourcing-examples/02-event-sourced-orders/`](event-sourcing-examples/02-event-sourced-orders/) | Versioned Event Store, event replay, snapshots, SQL projection and expected-version checks | **Aggregate-Only vs Event-Sourced Order** (slide 17) |
+| 3 | [`aggregate-only/`](aggregate-only/) | `Order` invariants, PostgreSQL current-state storage and atomic optimistic version check | **The Trouble with Traditional Persistence** (slide 8) |
+| 4 | [`event-sourced-orders/`](event-sourced-orders/) | One Order Service, Python `eventsourcing` library, snapshots, history replay and version checks | **Aggregate-Only vs Event-Sourced Order** (slide 23) |
+| 5 | [`event-sourced-saga-orchestration/`](event-sourced-saga-orchestration/) | Event-sourced Saga Orchestrator and participants, four PostgreSQL databases, atomic Outbox/Inbox | **Sagas and Event Sourcing** (slides 24–30) |
+| 6 | [`event-sourced-cqrs-query-service/`](event-sourced-cqrs-query-service/) | External `findOrder` Query Service; live API Composition versus CQRS read model, **fifth PostgreSQL** | **CQRS and Query-Only Services** (slides 31–43) |
 
-**Additional example within Lab 4:** [`PostgreSQL vs MongoDB Idempotency`](event-sourcing-examples/02-event-sourced-orders/IDEMPOTENCY_POSTGRES_MONGODB.md). It complements **Reliable Publishing and Idempotent Consumers** (slide 13) and runs as part of Lab 4.
+**Additional example within the Event-Sourced Orders lab:** [`PostgreSQL vs MongoDB Idempotency`](event-sourced-orders/IDEMPOTENCY_POSTGRES_MONGODB.md). It complements **Reliable Publishing and Idempotent Consumers** (slide 13) and runs as part of the Event-Sourced Orders lab.
 
 The labs run as **separate Docker Compose stacks**. The CDC example includes its own Kafka instance and does not depend on Kafka Fundamentals. Run one stack at a time to simplify resource use. Both Kafka-based stacks include **Kafbat UI** for inspecting topics, partitions, messages and consumer groups; the CDC UI also shows Debezium Kafka Connect connectors. The interfaces are bound to localhost: **<http://localhost:8085>** for Kafka Fundamentals and **<http://localhost:8086>** for CDC.
 
@@ -26,6 +28,10 @@ The labs run as **separate Docker Compose stacks**. The CDC example includes its
 **Lab 3: Traditional persistence.** The aggregate applies business rules while SQL tables retain the **latest current state**. A stale expected version fails with HTTP **409**, preventing lost updates.
 
 **Lab 4: Event-Sourced persistence.** Use the *same kind of Order operations*, but reconstruct state from events instead of loading current-state rows. The example includes snapshots, a historical read, an expected-version conflict, and a separate idempotency comparison using PostgreSQL and MongoDB.
+
+**Lab 5: Event-sourced Saga.** Four services, each with an independent PostgreSQL Event Store: Order, Accounting, Kitchen, and Saga Orchestrator. RabbitMQ carries commands and replies; event-sourced Saga events and local Outbox/Inbox records enable recovery and safe duplicate deliveries. The explicit SQL implementation makes the course slides' `process()`/`apply()` mechanics visible.
+
+**Lab 6: External CQRS Query Service.** This includes the full Lab 5 workflow and adds an independent Order Query Service with its own PostgreSQL. Compare `/find-order/{id}/composition` (three internal HTTP calls per query) with `/find-order/{id}/cqrs` (one materialized read-model lookup). `make demo-outage` illustrates the runtime dependency problem of API Composition; `make rebuild-projection` demonstrates rebuilding the read side from retained integration notifications. No circuit breaker is implemented here; those resilience patterns were introduced previously.
 
 ## Architecture: Kafka and CDC integration
 
@@ -61,11 +67,11 @@ The CDC example uses **two connectors**, one for `orders` raw changes and one fo
 
 ```mermaid
 flowchart TB
-    subgraph Traditional[Example 01 - Aggregate Only]
+    subgraph Traditional[Aggregate-Only]
         D1[Order Aggregate] --> R1[Repository and Unit of Work]
         R1 --> S1[(PostgreSQL current state)]
     end
-    subgraph Sourcing[Example 02 - Event Sourced]
+    subgraph Sourcing[Event-Sourced Orders]
         D2[Order Aggregate] --> R2[OrderStore adapter]
         R2 --> S2[(PostgreSQL append-only Event Store)]
         S2 --> Replay[Historical replay and snapshots]
@@ -134,7 +140,7 @@ Then create a direct SQL change with `make db-update` (raw CDC only), and option
 ### Lab 3 - Aggregate-Only Order Service
 
 ```bash
-cd ../event-sourcing-examples/01-aggregate-only
+cd ../aggregate-only
 make up
 make demo
 make inspect
@@ -146,7 +152,7 @@ The script creates an Order, mutates current-state rows, attempts a stale expect
 ### Lab 4 - Event-Sourced Orders and idempotency comparison
 
 ```bash
-cd ../02-event-sourced-orders
+cd ../event-sourced-orders
 make up
 make demo
 make inspect
@@ -157,6 +163,30 @@ make down
 ```
 
 The Event-Sourced demo shows historical version retrieval and an expected-version conflict. The *separate* Inbox demonstrations deliver two message IDs twice each, verifying that only two business effects persist.
+
+### Lab 5 - Event-Sourced Saga Orchestration
+
+```bash
+cd ../event-sourced-saga-orchestration
+make up
+make demo-happy
+make demo-compensation
+make inspect-saga
+make down
+```
+
+### Lab 6 - Event-Sourced Saga + CQRS Query Service
+
+```bash
+cd ../event-sourced-cqrs-query-service
+make up
+make demo-comparison
+make demo-outage
+make rebuild-projection
+make down
+```
+
+The Query Service is externally available at <http://localhost:8215/docs>. It owns a fifth database; the other services keep separate Event Stores. Run one of Labs 5 or 6 at a time because their demo host ports overlap.
 
 ## What to observe
 
@@ -182,7 +212,7 @@ The Event-Sourced demo shows historical version retrieval and an expected-versio
 
 These are **teaching demonstrations, not production-ready service templates**. Local credentials, single-node infrastructure, selected failure paths, intentionally simple monitoring, and limited transaction boundaries are deliberate. Run `make test` in each lab to execute its available local tests; Event-Sourced Orders also has `make test-integration` for PostgreSQL-backed checks.
 
-The configurations and source are packaged as runnable examples, but **full Docker end-to-end verification must be performed on the teaching machine** before class. Read [`VERIFICATION.md`](VERIFICATION.md) for verification commands and known boundaries. Each lab has `make down`; `make reset` additionally deletes volumes and should only be used intentionally.
+The source and Docker Compose configurations are intended to be runnable, but full end-to-end behavior still needs verification in an actual Docker environment. The new Saga and CQRS labs include unit tests (`make test`), and each README lists the expected results. Every stack has `make down`; `make reset` additionally **deletes persistent volumes**.
 
 ## Related Chapter 4 laboratory
 

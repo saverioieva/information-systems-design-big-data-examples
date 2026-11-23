@@ -1,0 +1,145 @@
+# All databases are distinct PostgreSQL instances (database per service).
+# The same application image is configured with a different SERVICE_ROLE.
+x-pg-common: &pg-common
+  image: postgres:16
+  environment:
+    POSTGRES_USER: demo
+    POSTGRES_PASSWORD: demo
+    POSTGRES_DB: events
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U demo -d events"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
+x-api-common: &api-common
+  build: .
+  restart: unless-stopped
+  environment: &api-env
+    RABBITMQ_URL: amqp://lab:lab@rabbit:5672/%2F
+    LAB_ADMIN_ENABLED: "1"
+  depends_on:
+    rabbit:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
+services:
+  rabbit:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: lab
+      RABBITMQ_DEFAULT_PASS: lab
+    volumes: [rabbit_messages:/var/lib/rabbitmq]
+    ports:
+      - "15683:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  order-db:
+    <<: *pg-common
+    volumes: [order_events:/var/lib/postgresql/data]
+  accounting-db:
+    <<: *pg-common
+    volumes: [accounting_events:/var/lib/postgresql/data]
+  kitchen-db:
+    <<: *pg-common
+    volumes: [kitchen_events:/var/lib/postgresql/data]
+  saga-db:
+    <<: *pg-common
+    volumes: [saga_events:/var/lib/postgresql/data]
+  query-db:
+    <<: *pg-common
+    volumes: [query_views:/var/lib/postgresql/data]
+
+  order:
+    <<: *api-common
+    environment:
+      <<: *api-env
+      SERVICE_ROLE: order
+      DATABASE_URL: postgresql://demo:demo@order-db:5432/events
+    depends_on:
+      rabbit: {condition: service_healthy}
+      order-db: {condition: service_healthy}
+    ports: ["8211:8000"]
+  accounting:
+    <<: *api-common
+    environment:
+      <<: *api-env
+      SERVICE_ROLE: accounting
+      DATABASE_URL: postgresql://demo:demo@accounting-db:5432/events
+    depends_on:
+      rabbit: {condition: service_healthy}
+      accounting-db: {condition: service_healthy}
+    ports: ["8212:8000"]
+  kitchen:
+    <<: *api-common
+    environment:
+      <<: *api-env
+      SERVICE_ROLE: kitchen
+      DATABASE_URL: postgresql://demo:demo@kitchen-db:5432/events
+    depends_on:
+      rabbit: {condition: service_healthy}
+      kitchen-db: {condition: service_healthy}
+    ports: ["8213:8000"]
+  orchestrator:
+    <<: *api-common
+    environment:
+      <<: *api-env
+      SERVICE_ROLE: orchestrator
+      DATABASE_URL: postgresql://demo:demo@saga-db:5432/events
+    depends_on:
+      rabbit: {condition: service_healthy}
+      saga-db: {condition: service_healthy}
+    ports: ["8214:8000"]
+  query:
+    <<: *api-common
+    environment:
+      <<: *api-env
+      SERVICE_ROLE: query
+      DATABASE_URL: postgresql://demo:demo@query-db:5432/events
+      ORDER_INTERNAL_URL: http://order:8000
+      ACCOUNTING_INTERNAL_URL: http://accounting:8000
+      KITCHEN_INTERNAL_URL: http://kitchen:8000
+    depends_on:
+      rabbit: {condition: service_healthy}
+      query-db: {condition: service_healthy}
+      order: {condition: service_started}
+      accounting: {condition: service_started}
+      kitchen: {condition: service_started}
+    ports: ["8215:8000"]
+  demo:
+    build: .
+    profiles: ["tools"]
+    environment:
+      ORDER_URL: http://order:8000
+      ACCOUNTING_URL: http://accounting:8000
+      KITCHEN_URL: http://kitchen:8000
+      SAGA_URL: http://orchestrator:8000
+      QUERY_URL: http://query:8000
+    entrypoint: ["python", "-m", "scripts.demo"]
+    volumes: [demo_shared:/shared]
+    depends_on:
+      order: {condition: service_started}
+      accounting: {condition: service_started}
+      kitchen: {condition: service_started}
+      orchestrator: {condition: service_started}
+  unit-tests:
+    build: .
+    profiles: ["tools"]
+    entrypoint: ["python", "-m", "pytest", "tests", "-q"]
+
+volumes:
+  rabbit_messages:
+  order_events:
+  accounting_events:
+  kitchen_events:
+  saga_events:
+  demo_shared:
+  query_views:

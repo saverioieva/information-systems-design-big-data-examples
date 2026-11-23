@@ -2,7 +2,7 @@
 
 A small runnable **FastAPI + PostgreSQL** Order service using **Hexagonal (Ports & Adapters) Architecture**. An `Order` Aggregate enforces business invariants, while a Repository and Unit of Work persist the **latest current state** in SQL. An explicit numeric `version` field demonstrates **atomic optimistic locking**.
 
-This is the **current-state baseline** for the Event Sourcing comparison in [Chapter 5 - Event-Driven Architecture](../../README.md). It uses aggregate concepts introduced in the Chapter 4 DDD laboratory, but **does not store or replay domain events**.
+This is the **current-state baseline** for the Event Sourcing comparison in [Chapter 5 - Event-Driven Architecture](../README.md). It uses aggregate concepts introduced in the Chapter 4 DDD laboratory, but **does not store or replay domain events**.
 
 ## What to learn
 
