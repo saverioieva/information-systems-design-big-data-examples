@@ -13,6 +13,7 @@ from lab.handlers import create_order
 from lab.messaging import MessageWorker
 from lab.storage import EventStore
 from lab.read_model import QueryStore
+from lab.kafka_worker import HistoryStreamWorker
 from lab.query_api import router as query_router
 
 ROLE = os.getenv("SERVICE_ROLE", "order")
@@ -35,7 +36,7 @@ class CreateOrder(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db = QueryStore() if ROLE == "query" else EventStore()
+    db = QueryStore() if ROLE == "history" else EventStore()
     for attempt in range(30):
         try:
             db.ensure_schema()
@@ -44,9 +45,9 @@ async def lifespan(app: FastAPI):
             if attempt == 29:
                 raise
             sleep(1)
-    worker = MessageWorker(ROLE, None if ROLE == "query" else db, db if ROLE == "query" else None)
+    worker = HistoryStreamWorker(db) if ROLE == "history" else MessageWorker(ROLE, db)
     worker.start()
-    if ROLE == "query":
+    if ROLE == "history":
         app.state.query_store = db
     else:
         app.state.event_store = db
@@ -55,8 +56,8 @@ async def lifespan(app: FastAPI):
     worker.stop()
 
 
-app = FastAPI(title=f"Event-Sourced Saga + CQRS — {ROLE}", lifespan=lifespan)
-if ROLE == "query":
+app = FastAPI(title=f"Event-Sourced Saga + Order History — {ROLE}", lifespan=lifespan)
+if ROLE == "history":
     app.include_router(query_router)
 
 
@@ -123,7 +124,7 @@ def saga(order_id: str):
 
 @app.get("/events/{order_id}")
 def events(order_id: str):
-    if ROLE == "query":
+    if ROLE == "history":
         raise HTTPException(status_code=404)
     if ROLE == "orchestrator":
         stream = f"saga:{order_id}"
@@ -135,7 +136,7 @@ def events(order_id: str):
 
 @app.get("/internal/stats")
 def stats():
-    if ROLE == "query":
+    if ROLE == "history":
         return {"service": ROLE, **app.state.query_store.stats()}
     return {"service": ROLE, **_store().stats()}
 

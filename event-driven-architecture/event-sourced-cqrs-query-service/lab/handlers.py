@@ -1,11 +1,16 @@
-"""Inbound message use cases. No other service's database is ever accessed."""
+"""Inbound HTTP and broker use cases; individual Saga adapters own message mapping."""
 from __future__ import annotations
 
 from typing import Any
 from uuid import uuid4
 
-from lab.domain import Decision, evolve, message, process
-from lab.storage import EventStore
+from lab.application import AggregateApplicationService
+from lab.domain import CreateOrder, message
+from lab.saga_handlers import HANDLERS
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lab.storage import EventStore
 
 
 def create_order(store: EventStore, payload: dict[str, Any]) -> dict[str, Any]:
@@ -14,34 +19,24 @@ def create_order(store: EventStore, payload: dict[str, Any]) -> dict[str, Any]:
     if not items or any(x["quantity"] <= 0 or x["price"] <= 0 for x in items):
         raise ValueError("The order needs positive-quantity, positive-price items")
     total = round(sum(float(x["price"]) * int(x["quantity"]) for x in items), 2)
-    event_data = {
-        "order_id": oid,
-        "consumer_id": payload["consumer_id"],
-        "restaurant_id": payload["restaurant_id"],
-        "items": items,
-        "total": total,
-        "reject": bool(payload.get("reject_kitchen", False)),
-    }
-    # OrderCreated is appended in the same transaction as the Saga start request.
-    decision = Decision(
-        events=[("OrderCreated", event_data)],
-        messages=[message("order.created", oid, event_data)],
+    command = CreateOrder(oid, payload["consumer_id"], payload["restaurant_id"],
+                          items, total, bool(payload.get("reject_kitchen", False)))
+
+    def start_saga(decision):
+        # Forward OrderCreated (business notification), not a foreign domain event.
+        return [message("order.created", oid, decision.events[0][1])]
+
+    state, _ = AggregateApplicationService(store, "order", "Order").execute(
+        command, message_id=None, messages_for=start_saga,
     )
-    state, _ = store.execute(role="order", aggregate_type="Order", aggregate_id=oid,
-                             message_id=None, decide=lambda _: decision)
     return state
 
 
 def handle_delivery(store: EventStore, role: str, msg: dict[str, Any]) -> bool:
-    if "message_id" not in msg or "order_id" not in msg or "type" not in msg:
-        raise ValueError("Invalid integration/command message envelope")
-    oid = msg["order_id"]
-    if role == "orchestrator":
-        stream = f"saga:{oid}"
-        aggregate_type = "SagaOrchestrator"
-    else:
-        stream = oid
-        aggregate_type = {"order": "Order", "accounting": "AccountAuthorization", "kitchen": "KitchenTicket"}[role]
-    _, fresh = store.execute(role=role, aggregate_type=aggregate_type, aggregate_id=stream,
-                             message_id=msg["message_id"], decide=lambda state: process(role, msg, state))
-    return fresh
+    if not all(field in msg for field in ("message_id", "order_id", "type")):
+        raise ValueError("Invalid Saga message envelope")
+    try:
+        handler = HANDLERS[role]
+    except KeyError as exc:
+        raise ValueError(f"Unknown service role: {role}") from exc
+    return handler.handle(store, msg)

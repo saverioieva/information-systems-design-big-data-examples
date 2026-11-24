@@ -15,11 +15,11 @@ The **DDD Aggregates and Domain Events** example remains in [Chapter 4 - Microse
 | 3 | [`aggregate-only/`](aggregate-only/) | `Order` invariants, PostgreSQL current-state storage and atomic optimistic version check | **The Trouble with Traditional Persistence** (slide 8) |
 | 4 | [`event-sourced-orders/`](event-sourced-orders/) | One Order Service, Python `eventsourcing` library, snapshots, history replay and version checks | **Aggregate-Only vs Event-Sourced Order** (slide 23) |
 | 5 | [`event-sourced-saga-orchestration/`](event-sourced-saga-orchestration/) | Event-sourced Saga Orchestrator and participants, four PostgreSQL databases, atomic Outbox/Inbox | **Sagas and Event Sourcing** (slides 24–30) |
-| 6 | [`event-sourced-cqrs-query-service/`](event-sourced-cqrs-query-service/) | External `findOrder` Query Service; live API Composition versus CQRS read model, **fifth PostgreSQL** | **CQRS and Query-Only Services** (slides 31–43) |
+| 6 | [`event-sourced-cqrs-query-service/`](event-sourced-cqrs-query-service/) | External **Order History Service**; `findOrder` via API Composition versus CQRS, **MongoDB read model + Kafka streaming** | **CQRS and Query-Only Services** (slides 31–43) |
 
-**Additional example within the Event-Sourced Orders lab:** [`PostgreSQL vs MongoDB Idempotency`](event-sourced-orders/IDEMPOTENCY_POSTGRES_MONGODB.md). It complements **Reliable Publishing and Idempotent Consumers** (slide 13) and runs as part of the Event-Sourced Orders lab.
+**Additional example within the Event-Sourced Orders lab:** [`PostgreSQL vs MongoDB Idempotency`](event-sourced-orders/IDEMPOTENCY_POSTGRES_MONGODB.md). It complements **Idempotent Message Processing** (slide 19) and runs as part of the Event-Sourced Orders lab.
 
-The labs run as **separate Docker Compose stacks**. The CDC example includes its own Kafka instance and does not depend on Kafka Fundamentals. Run one stack at a time to simplify resource use. Both Kafka-based stacks include **Kafbat UI** for inspecting topics, partitions, messages and consumer groups; the CDC UI also shows Debezium Kafka Connect connectors. The interfaces are bound to localhost: **<http://localhost:8085>** for Kafka Fundamentals and **<http://localhost:8086>** for CDC.
+The labs run as **separate Docker Compose stacks**. The CDC example includes its own Kafka instance and does not depend on Kafka Fundamentals. Run one stack at a time to simplify resource use. The Kafka Fundamentals, CDC and Order History stacks each include **Kafbat UI** for inspecting topics, partitions, messages and consumer groups. The UIs are bound to localhost: **<http://localhost:8085>** (Kafka Fundamentals), **<http://localhost:8086>** (CDC), and **<http://localhost:8087>** (Order History CQRS).
 
 ## How the examples fit together
 
@@ -29,9 +29,9 @@ The labs run as **separate Docker Compose stacks**. The CDC example includes its
 
 **Lab 4: Event-Sourced persistence.** Use the *same kind of Order operations*, but reconstruct state from events instead of loading current-state rows. The example includes snapshots, a historical read, an expected-version conflict, and a separate idempotency comparison using PostgreSQL and MongoDB.
 
-**Lab 5: Event-sourced Saga.** Four services, each with an independent PostgreSQL Event Store: Order, Accounting, Kitchen, and Saga Orchestrator. RabbitMQ carries commands and replies; event-sourced Saga events and local Outbox/Inbox records enable recovery and safe duplicate deliveries. The explicit SQL implementation makes the course slides' `process()`/`apply()` mechanics visible.
+**Lab 5: Event-sourced Saga.** Four services, each with an independent PostgreSQL Event Store: Order, Accounting, Kitchen, and Saga Orchestrator. RabbitMQ carries commands and replies; **dedicated participant Saga handlers translate broker requests into typed local Aggregate commands**, while event-sourced Saga events and local Outbox/Inbox records enable recovery and safe duplicate deliveries. The explicit SQL implementation makes the course slides' `process()`/`apply()` mechanics visible.
 
-**Lab 6: External CQRS Query Service.** This includes the full Lab 5 workflow and adds an independent Order Query Service with its own PostgreSQL. Compare `/find-order/{id}/composition` (three internal HTTP calls per query) with `/find-order/{id}/cqrs` (one materialized read-model lookup). `make demo-outage` illustrates the runtime dependency problem of API Composition; `make rebuild-projection` demonstrates rebuilding the read side from retained integration notifications. No circuit breaker is implemented here; those resilience patterns were introduced previously.
+**Lab 6: Event-Sourced Order History Service (CQRS, Kafka and MongoDB).** This includes the full Lab 5 workflow and adds an external Order History Service with **its own MongoDB**, receiving business Integration Events from a **Kafka topic** via a reliable RabbitMQ-to-Kafka bridge. Compare `/find-order/{id}/composition` (three live HTTP calls per request) with `/find-order/{id}/cqrs` (one MongoDB document read); `/order-history/{id}` shows a projected event timeline. `make demo-outage` illustrates API Composition's availability problem. `make rebuild-projection` resets the **Kafka consumer group's offsets** to the earliest retained records and reconstructs MongoDB. No circuit breaker is implemented; those mitigations were covered earlier.
 
 ## Architecture: Kafka and CDC integration
 
@@ -91,7 +91,7 @@ The MongoDB example in lab 4 illustrates **atomic, single-document message dedup
 - **Outbox/Inbox versus Event Sourcing:** atomic Outbox recording and consumer deduplication improve messaging reliability. Event Sourcing instead makes **domain-event history** authoritative for the aggregate state.
 - **Expected-version checks versus idempotency:** version checks detect concurrent writes to an aggregate. Persistent message IDs suppress duplicate effects from repeated deliveries. These are distinct safeguards.
 - **Snapshots and projections:** snapshots optimize event replay; projections are derived query models, not replacements for the authoritative Event Store.
-- **NoSQL scope:** MongoDB is used only in the lab 4 idempotency comparison, **not** in the Kafka/CDC stack, and it is **not** presented as a complete MongoDB Event Store.
+- **NoSQL scope:** MongoDB appears in lab 4 for a bounded idempotency example, and in lab 6 as the **Order History read model**. It is **not** an authoritative Event Store in either case. The separate Kafka/CDC stack does not use MongoDB.
 
 ## Getting started
 
@@ -175,7 +175,7 @@ make inspect-saga
 make down
 ```
 
-### Lab 6 - Event-Sourced Saga + CQRS Query Service
+### Lab 6 - Order History Service (Kafka + MongoDB CQRS)
 
 ```bash
 cd ../event-sourced-cqrs-query-service
@@ -186,7 +186,7 @@ make rebuild-projection
 make down
 ```
 
-The Query Service is externally available at <http://localhost:8215/docs>. It owns a fifth database; the other services keep separate Event Stores. Run one of Labs 5 or 6 at a time because their demo host ports overlap.
+The **Order History Service** is externally available at <http://localhost:8215/docs>. It owns an independent **MongoDB read model**; the other services retain their four PostgreSQL Event Stores. Kafka UI is at <http://localhost:8087>. The demo compares three live internal HTTP calls with one local MongoDB document query, and exposes a projected business-event timeline. Run one of Labs 5 or 6 at a time because their demo host ports overlap.
 
 ## What to observe
 
@@ -196,6 +196,7 @@ The Query Service is externally available at <http://localhost:8215/docs>. It ow
 4. Aggregate-Only stores the latest `orders` / `order_line_items` state with a numeric version.
 5. Event-Sourced Orders stores **versioned append-only events**; snapshots and the SQL projection are derived artifacts.
 6. PostgreSQL and MongoDB implement idempotency through **different local atomicity boundaries**.
+7. The external Order History Service uses **Kafka event streaming** to project a MongoDB read model while RabbitMQ still coordinates the Saga.
 
 ## Hexagonal Architecture: Domain, Application, Ports and Adapters
 

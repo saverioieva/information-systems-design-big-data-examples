@@ -79,135 +79,100 @@ def evolve(role: str, history: list[dict[str, Any]]) -> dict[str, Any]:
     return state
 
 
-def _reply(kind: str, original: dict[str, Any], **data: Any) -> dict[str, Any]:
-    return message(kind, original["order_id"], data, saga_id=original.get("saga_id", ""),
-                   seed=original["message_id"])
+# These are local domain commands, NOT RabbitMQ message envelopes.
+# A participant's Saga adapter chooses which command to invoke.
+@dataclass(frozen=True)
+class CreateOrder:
+    order_id: str
+    consumer_id: str
+    restaurant_id: str
+    items: list[dict[str, Any]]
+    total: float
+    reject: bool = False
 
 
-def process(role: str, incoming: dict[str, Any], state: dict[str, Any]) -> Decision:
-    """Validate a command/reply and *propose* events and outgoing messages.
+@dataclass(frozen=True)
+class AuthorizeAccount:
+    order_id: str
+    amount: float
 
-    No mutation of the state and no database or RabbitMQ access occurs here.
-    The event store commits events, inbox and outbox in one local transaction.
+
+@dataclass(frozen=True)
+class VoidAuthorization:
+    order_id: str
+
+
+@dataclass(frozen=True)
+class PrepareTicket:
+    order_id: str
+    restaurant_id: str
+    reject: bool = False
+
+
+@dataclass(frozen=True)
+class ApproveOrder:
+    order_id: str
+
+
+@dataclass(frozen=True)
+class CancelOrder:
+    order_id: str
+
+
+DomainCommand = (CreateOrder | AuthorizeAccount | VoidAuthorization |
+                 PrepareTicket | ApproveOrder | CancelOrder)
+
+
+def process(command: DomainCommand, state: dict[str, Any]) -> Decision:
+    """Aggregate command decision: validate invariants and propose domain events.
+
+    No transport message, reply, Event Store, or I/O is involved. This is the
+    explicit process(command) step shown in the lecture slides. apply(event)
+    reconstructs state from the persisted events independently of the command.
     """
-    kind = incoming["type"]
-    oid = incoming["order_id"]
-    saga = incoming.get("saga_id", "")
-    data = incoming.get("data", {})
     result = Decision()
-
-    if role == "orchestrator":
-        if kind == "order.created":
-            if state["exists"]:
-                return result
-            result.events.append(("SagaOrchestratorCreated", {"order_id": oid}))
-            command = message("command.account.authorize", oid,
-                              {"amount": data["total"], "restaurant_id": data["restaurant_id"],
-                               "reject": bool(data.get("reject", False))}, saga_id=f"saga:{oid}")
-            result.events.append(("SagaCommandRequested", {"step": "AUTHORIZING", "command_type": command["type"],
-                                                          "message_id": command["message_id"]}))
-            result.messages.append(command)
-            return result
-        # A late or repeated reply must not move an already-advanced saga backward.
-        transitions = {
-            ("AUTHORIZING", "reply.account.authorized"):
-                ("TICKETING", "command.kitchen.prepare", {"restaurant_id": data.get("restaurant_id", "demo-restaurant"),
-                                                            "reject": data.get("reject", False)}),
-            ("TICKETING", "reply.kitchen.accepted"):
-                ("APPROVING", "command.order.approve", {}),
-            ("TICKETING", "reply.kitchen.rejected"):
-                ("VOIDING", "command.account.void", {}),
-            ("VOIDING", "reply.account.voided"):
-                ("CANCELLING", "command.order.cancel", {}),
-        }
-        # The original kitchen scenario must survive the Accounting round-trip.
-        if kind == "reply.account.authorized" and state.get("step") == "AUTHORIZING":
-            target_step, command_kind, _ = transitions[("AUTHORIZING", kind)]
-            command_data = {"restaurant_id": data.get("restaurant_id", "demo-restaurant"),
-                            "reject": bool(data.get("reject", False))}
-        else:
-            transition = transitions.get((state.get("step"), kind))
-            if transition is None:
-                if (state.get("step"), kind) == ("APPROVING", "reply.order.approved"):
-                    result.events.extend([
-                        ("SagaReplyReceived", {"reply_type": kind}),
-                        ("SagaCompleted", {"order_id": oid}),
-                    ])
-                elif (state.get("step"), kind) == ("CANCELLING", "reply.order.cancelled"):
-                    result.events.extend([
-                        ("SagaReplyReceived", {"reply_type": kind}),
-                        ("SagaCompensated", {"order_id": oid}),
-                    ])
-                return result
-            target_step, command_kind, command_data = transition
-        command = message(command_kind, oid, command_data, saga_id=f"saga:{oid}")
-        result.events.extend([
-            ("SagaReplyReceived", {"reply_type": kind}),
-            ("SagaCommandRequested", {"step": target_step, "command_type": command_kind,
-                                      "message_id": command["message_id"]}),
-        ])
-        result.messages.append(command)
-        return result
-
-    if role == "accounting":
-        if kind == "command.account.authorize":
-            if not state["exists"]:
-                result.events.append(("AccountAuthorized", {"order_id": oid, "amount": data["amount"]}))
-            elif state.get("status") != "AUTHORIZED":
-                raise ValueError("Cannot authorize a voided account")
-            reply = _reply("reply.account.authorized", incoming,
-                           restaurant_id=data.get("restaurant_id", "demo-restaurant"),
-                           reject=bool(data.get("reject", False)))
-        elif kind == "command.account.void":
-            if state.get("status") == "AUTHORIZED":
-                result.events.append(("AuthorizationVoided", {"order_id": oid}))
-            elif state.get("status") != "VOIDED":
-                raise ValueError("Authorization to void was not found")
-            reply = _reply("reply.account.voided", incoming)
-        else:
-            raise ValueError(f"Unknown accounting command: {kind}")
-        # A pseudo-event records intent to reply even when no business change occurs.
-        result.events.append(("SagaReplyRequested", {"reply_id": reply["message_id"],
-                                                      "reply_type": reply["type"]}))
-        result.messages.append(reply)
-        return result
-
-    if role == "kitchen":
-        if kind != "command.kitchen.prepare":
-            raise ValueError(f"Unknown kitchen command: {kind}")
+    oid = command.order_id
+    if isinstance(command, CreateOrder):
+        if state["exists"]:
+            raise ValueError("Order already exists")
+        if not command.items or any(int(i["quantity"]) <= 0 or float(i["price"]) <= 0
+                                    for i in command.items):
+            raise ValueError("The order needs positive-quantity, positive-price items")
+        result.events.append(("OrderCreated", {
+            "order_id": oid, "consumer_id": command.consumer_id,
+            "restaurant_id": command.restaurant_id, "items": command.items,
+            "total": command.total, "reject": command.reject,
+        }))
+    elif isinstance(command, AuthorizeAccount):
+        if command.amount <= 0:
+            raise ValueError("Authorization amount must be positive")
         if not state["exists"]:
-            rejected = bool(data.get("reject", False))
-            result.events.append(("TicketRejected" if rejected else "TicketAccepted",
-                                  {"order_id": oid, "restaurant_id": data.get("restaurant_id", "demo-restaurant")}))
-        reply_type = "reply.kitchen.rejected" if (state.get("status") == "REJECTED" or
-                                                   (not state["exists"] and data.get("reject", False))) else "reply.kitchen.accepted"
-        reply = _reply(reply_type, incoming)
-        result.events.append(("SagaReplyRequested", {"reply_id": reply["message_id"],
-                                                      "reply_type": reply["type"]}))
-        result.messages.append(reply)
-        return result
-
-    if role == "order":
-        if kind == "command.order.approve":
-            if state.get("status") == "PENDING":
-                result.events.append(("OrderApproved", {"order_id": oid}))
-            elif state.get("status") != "APPROVED":
-                raise ValueError("Cannot approve a cancelled order")
-            reply = _reply("reply.order.approved", incoming)
-        elif kind == "command.order.cancel":
-            if state.get("status") == "PENDING":
-                result.events.append(("OrderCancelled", {"order_id": oid}))
-            elif state.get("status") != "CANCELLED":
-                raise ValueError("Cannot cancel an approved order")
-            reply = _reply("reply.order.cancelled", incoming)
-        else:
-            raise ValueError(f"Unknown order command: {kind}")
-        result.events.append(("SagaReplyRequested", {"reply_id": reply["message_id"],
-                                                      "reply_type": reply["type"]}))
-        result.messages.append(reply)
-        return result
-
-    raise ValueError(f"Unknown service role: {role}")
+            result.events.append(("AccountAuthorized", {"order_id": oid, "amount": command.amount}))
+        elif state.get("status") != "AUTHORIZED":
+            raise ValueError("Cannot authorize a voided account")
+    elif isinstance(command, VoidAuthorization):
+        if state.get("status") == "AUTHORIZED":
+            result.events.append(("AuthorizationVoided", {"order_id": oid}))
+        elif state.get("status") != "VOIDED":
+            raise ValueError("Authorization to void was not found")
+    elif isinstance(command, PrepareTicket):
+        if not state["exists"]:
+            result.events.append(("TicketRejected" if command.reject else "TicketAccepted", {
+                "order_id": oid, "restaurant_id": command.restaurant_id,
+            }))
+    elif isinstance(command, ApproveOrder):
+        if state.get("status") == "PENDING":
+            result.events.append(("OrderApproved", {"order_id": oid}))
+        elif state.get("status") != "APPROVED":
+            raise ValueError("Cannot approve a cancelled order")
+    elif isinstance(command, CancelOrder):
+        if state.get("status") == "PENDING":
+            result.events.append(("OrderCancelled", {"order_id": oid}))
+        elif state.get("status") != "CANCELLED":
+            raise ValueError("Cannot cancel an approved order")
+    else:
+        raise TypeError(f"Unknown aggregate command: {type(command).__name__}")
+    return result
 
 
 INTEGRATION_EVENTS = {

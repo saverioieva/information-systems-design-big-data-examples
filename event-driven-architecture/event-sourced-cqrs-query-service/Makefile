@@ -1,6 +1,7 @@
-.PHONY: up down reset logs test demo-happy demo-compensation demo-recovery demo-comparison demo-outage demo-catchup rebuild-projection inspect inspect-order inspect-accounting inspect-kitchen inspect-saga inspect-query
+.PHONY: up down reset logs test demo-happy demo-compensation demo-recovery demo-comparison demo-outage demo-catchup rebuild-projection inspect inspect-order inspect-accounting inspect-kitchen inspect-saga inspect-query kafka-info kafka-groups kafka-ui
+
 up:
-	docker compose up -d --build --wait order accounting kitchen orchestrator query
+	docker compose up -d --build --wait order accounting kitchen orchestrator history stream-bridge kafka-ui
 
 down:
 	docker compose down
@@ -9,7 +10,7 @@ reset:
 	docker compose down -v
 
 logs:
-	docker compose logs -f order accounting kitchen orchestrator query
+	docker compose logs -f order accounting kitchen orchestrator history stream-bridge
 
 test:
 	docker compose run --rm --build --no-deps unit-tests
@@ -44,27 +45,44 @@ inspect-kitchen:
 inspect-saga:
 	docker compose exec -T saga-db psql -U demo -d events -c "SELECT aggregate_id,version,event_type,payload FROM events ORDER BY occurred_at,version LIMIT 40"
 
-# The comparison is executed from the demo container on the same Docker network.
+# Both strategies query the SAME order through the SAME external History API.
 demo-comparison:
 	docker compose run --rm --no-deps --entrypoint python demo -m scripts.compare --scenario compare
 
-# The demo starts with a completed order; only composition needs the three APIs.
 demo-outage:
 	docker compose run --rm --no-deps --entrypoint python demo -m scripts.compare --scenario compare
 	@trap 'docker compose start kitchen >/dev/null' EXIT; \
 	 docker compose stop kitchen; \
 	 docker compose run --rm --no-deps --entrypoint python demo -m scripts.compare --scenario compare-last
 
-# The durable query queue buffers integration events while the query service is down.
+# Kafka retains integration events while the History consumer is offline.
 demo-catchup:
-	docker compose stop query
-	docker compose run --rm --no-deps demo --scenario create-only
-	docker compose start query
-	docker compose run --rm --no-deps --entrypoint python demo -m scripts.compare --scenario compare-last
+	docker compose stop history
+	@trap 'docker compose start history >/dev/null' EXIT; \
+	 docker compose run --rm --no-deps demo --scenario create-only; \
+	 docker compose start history; \
+	 docker compose run --rm --no-deps --entrypoint python demo -m scripts.compare --scenario compare-last
 
+# Stop the consumer before resetting its committed Kafka offsets. Then rebuild
+# the MongoDB projection from the topic's EARLIEST RETAINED records.
+# Run demo-comparison first to create and consume sample records.
 rebuild-projection:
-	docker compose run --rm --no-deps --entrypoint python demo -m scripts.compare --scenario rebuild
+	@set -e; trap 'docker compose start history >/dev/null' EXIT; \
+	 docker compose stop history; \
+	 docker compose run --rm --no-deps --entrypoint python history -m scripts.reset_history; \
+	 docker compose exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:19092 --group order-history-view --topic orders.integration --reset-offsets --to-earliest --execute; \
+	 docker compose start history; \
+	 trap - EXIT; \
+	 docker compose run --rm --no-deps --entrypoint python demo -m scripts.compare --scenario compare-last
 
 inspect-query:
-	docker compose exec -T query-db psql -U demo -d events -c "SELECT order_id,order_status,payment_status,kitchen_status FROM order_summary ORDER BY updated_at DESC LIMIT 20"
-	docker compose exec -T query-db psql -U demo -d events -c "SELECT order_id,source,last_version FROM projection_offsets ORDER BY order_id,source"
+	docker compose exec -T history-db mongosh --quiet order_history --eval 'db.order_history.find({}, {_id:1, order_status:1, payment_status:1, kitchen_status:1, source_versions:1, timeline:1}).limit(10).forEach(printjson)'
+
+kafka-info:
+	docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic orders.integration
+
+kafka-groups:
+	docker compose exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:19092 --describe --group order-history-view
+
+kafka-ui:
+	@echo "Kafka UI: http://localhost:8087 (topic orders.integration, group order-history-view)"

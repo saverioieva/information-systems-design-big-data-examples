@@ -2,7 +2,7 @@
 
 A **standalone, executable** extension of the Event Sourcing concepts in [Event-Sourced Orders](../event-sourced-orders/). This lab implements a Create Order Saga whose **participants and orchestrator are all event sourced**. Each service owns its **own PostgreSQL instance**; RabbitMQ carries durable commands and replies.
 
-Unlike Event-Sourced Orders, which uses the Python `eventsourcing` library to teach an individual Aggregate, this example deliberately implements a **small explicit Event Store** using PostgreSQL and `psycopg`. This makes `process(command)`, `apply(event)`, the Saga event stream, and atomic Outbox/Inbox boundaries visible in code. It does **not** pretend to reuse the `eventsourcing` framework internally.
+Unlike Event-Sourced Orders, which uses the Python `eventsourcing` library to teach an individual Aggregate, this example deliberately implements a **small explicit Event Store** using PostgreSQL and `psycopg`. This makes `process(command)`, `apply(event)`, the Saga event stream, and atomic Outbox/Inbox boundaries visible in code. **Each participant has its own Saga message handler** that translates a broker-level request into a local, typed Aggregate command; the Aggregate itself never interprets RabbitMQ message types. It does **not** pretend to reuse the `eventsourcing` framework internally.
 
 ## Architecture
 
@@ -21,6 +21,47 @@ flowchart LR
 ```
 
 **Four services, four PostgreSQL instances.** No service queries or writes another service's database. Every instance contains its own `events`, `aggregate_heads`, `inbox` and `outbox` tables. The `Order`, `AccountAuthorization`, `KitchenTicket` and `SagaOrchestrator` are separate Aggregate streams. This is a simplified demonstration of domain/technical patterns, not a payment-processing system.
+
+## Explicit Saga handlers versus local Aggregate commands
+
+A **Saga command is not a domain event to append** and the Orchestrator cannot decide which event a participant should record. The Saga Orchestrator publishes a request such as `command.account.authorize` to RabbitMQ; the receiving service owns the decision.
+
+```mermaid
+sequenceDiagram
+    participant S as Saga Orchestrator
+    participant R as RabbitMQ
+    participant H as AccountingSagaHandler
+    participant A as AggregateApplicationService
+    participant D as AccountAuthorization Aggregate
+    participant P as Accounting PostgreSQL
+    S->>R: command.account.authorize (message envelope)
+    R->>H: Deliver message
+    H->>A: AuthorizeAccount(order_id, amount) (local domain command)
+    A->>P: Load + replay stream using apply(event)
+    P-->>A: Current Aggregate state
+    A->>D: process(AuthorizeAccount, state)
+    D-->>A: AccountAuthorized (domain event decision)
+    A->>P: Atomic transaction: domain event + SagaReplyRequested + Inbox + reply Outbox
+    P-->>A: Commit
+    A-->>H: Processed
+    H-->>R: ACK inbound delivery
+    P-->>R: Separate Outbox relay: reply.account.authorized
+    R-->>S: Participant reply
+```
+
+**Follow the code in this order:**
+
+1. [`lab/messaging.py`](lab/messaging.py): `MessageWorker` receives the broker envelope and calls `handle_delivery()`; it never calls an Aggregate directly.
+2. [`lab/handlers.py`](lab/handlers.py): `handle_delivery()` routes the message to the service-specific adapter.
+3. [`lab/saga_handlers.py`](lab/saga_handlers.py): `AccountingSagaHandler`, `KitchenSagaHandler` and `OrderSagaHandler` **translate Saga messages into local typed commands** (`AuthorizeAccount`, `PrepareTicket`, `ApproveOrder`, etc.). The `SagaOrchestratorHandler` separately consumes `order.created` and replies.
+4. [`lab/application.py`](lab/application.py): `AggregateApplicationService` invokes the local decision and atomically records its proposed events, the `SagaReplyRequested` **technical pseudo-event**, an Inbox entry and the reply Outbox message. The pseudo-event belongs to the integration/application boundary, not to the business Aggregate's rules.
+5. [`lab/domain.py`](lab/domain.py): **`process(command, state)`** checks invariants and proposes **only domain events**; **`apply(role, state, event)`** is used to replay persisted events. Neither method sends messages.
+6. [`lab/orchestration.py`](lab/orchestration.py): `advance_saga(message, saga_state)` runs the **Saga's own event-sourced state machine** and chooses the next participant command; it never modifies participant streams.
+7. [`lab/storage.py`](lab/storage.py): locks the local stream, deduplicates deliveries, appends events and the Outbox in one PostgreSQL transaction. The actual RabbitMQ publishing happens **after commit**.
+
+For example, the orchestrator's `command.kitchen.prepare` is **not** persisted as `TicketAccepted`: `KitchenSagaHandler` first constructs `PrepareTicket`, and the Kitchen Aggregate's `process()` chooses **`TicketAccepted` or `TicketRejected`**. If there is no new business event (e.g. the ticket already exists), the Saga handler still records `SagaReplyRequested` when an independently identified message requires a reply; an exact duplicate message ID is discarded by the Inbox.
+
+**Choreography would be a different workflow**: participants would subscribe to business events (for example `AccountAuthorized`) and their event handlers would trigger local Aggregate commands without a central Saga Orchestrator. This laboratory demonstrates **Orchestration**, not Choreography. Event Sourcing is independent of that coordination choice.
 
 ## Start and run
 
@@ -131,10 +172,13 @@ The stream uses a unique `(aggregate_id, version)` constraint and a locked local
 
 | Concern | Source |
 |---|---|
-| Event-sourced state reconstruction and command decisions | [`lab/domain.py`](lab/domain.py) (`evolve` and `process`) |
+| Local typed Aggregate commands, `process()` and `apply()` / replay | [`lab/domain.py`](lab/domain.py) |
+| Individual participant Saga handlers and wire-command translation | [`lab/saga_handlers.py`](lab/saga_handlers.py) |
+| Local command application, reply pseudo-event and transactional coordination | [`lab/application.py`](lab/application.py) |
+| Event-sourced Saga state machine and outgoing commands | [`lab/orchestration.py`](lab/orchestration.py) |
 | Local stream version, Event Store, atomic Inbox/Outbox | [`lab/storage.py`](lab/storage.py) |
 | Reliable RabbitMQ publisher and durable consumer | [`lab/messaging.py`](lab/messaging.py) |
-| Order creation and message use cases | [`lab/handlers.py`](lab/handlers.py) |
+| HTTP Order creation and inbound message dispatch | [`lab/handlers.py`](lab/handlers.py) |
 | REST adapters, service ownership | [`lab/api.py`](lab/api.py) |
 | Three demo paths, including restart and redelivery | [`scripts/demo.py`](scripts/demo.py) |
 
@@ -142,6 +186,6 @@ The stream uses a unique `(aggregate_id, version)` constraint and a locked local
 
 - RabbitMQ routes commands and replies; it **is not** an Event Store. Event history resides in each service's own PostgreSQL.
 - The workflow intentionally has a single Saga per order and no overlapping Cancel Saga; concurrency isolation anomalies remain the focus of Chapter 4's separate Saga Isolation lab.
-- The Saga laboratory publishes selected **integration notifications** from its durable Outbox; they are unused here but become the source for the external CQRS Query Service in [Event-Sourced CQRS Query Service](../event-sourced-cqrs-query-service/).
+- The Saga laboratory publishes selected **integration notifications** from its durable Outbox; they are unused here but become the source for the external Kafka-driven Order History Service in [Event-Sourced CQRS Query Service](../event-sourced-cqrs-query-service/).
 - These labs assume demo-only trust within the Docker network: internal admin/requeue endpoints are **not production access controls**. There is no production dead-letter policy, timeouts-based compensation, or external payment integration.
 - Run one stack at a time, because Examples 03 and 04 intentionally reuse service ports 8211–8214 and RabbitMQ Management 15683.

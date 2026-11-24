@@ -1,5 +1,7 @@
-# All databases are distinct PostgreSQL instances (database per service).
-# The same application image is configured with a different SERVICE_ROLE.
+name: ch5-event-sourced-order-history
+
+# Each Saga service has its own PostgreSQL Event Store. The external Order
+# History Service owns a fifth, distinct data store: MongoDB (read model only).
 x-pg-common: &pg-common
   image: postgres:16
   environment:
@@ -18,14 +20,11 @@ x-api-common: &api-common
   environment: &api-env
     RABBITMQ_URL: amqp://lab:lab@rabbit:5672/%2F
     LAB_ADMIN_ENABLED: "1"
-  depends_on:
-    rabbit:
-      condition: service_healthy
   healthcheck:
     test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
     interval: 3s
     timeout: 3s
-    retries: 20
+    retries: 30
 
 services:
   rabbit:
@@ -34,13 +33,58 @@ services:
       RABBITMQ_DEFAULT_USER: lab
       RABBITMQ_DEFAULT_PASS: lab
     volumes: [rabbit_messages:/var/lib/rabbitmq]
-    ports:
-      - "15683:15672"
+    ports: ["127.0.0.1:15683:15672"]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 5s
       retries: 30
+
+  kafka:
+    image: apache/kafka:4.1.1
+    hostname: kafka
+    ports: ["127.0.0.1:29094:9092"]
+    environment:
+      CLUSTER_ID: '4L6g3nShT-eMCtK--X86sw'
+      KAFKA_NODE_ID: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT'
+      KAFKA_LISTENERS: 'CONTROLLER://:29093,PLAINTEXT://:19092,HOST://:9092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:19092,HOST://localhost:29094'
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes: [kafka_events:/var/lib/kafka/data]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  topics:
+    image: apache/kafka:4.1.1
+    depends_on:
+      kafka: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic orders.integration --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic orders.integration
+    restart: "no"
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    ports: ["127.0.0.1:8087:8080"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: event-sourced-order-history
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+    depends_on:
+      kafka: {condition: service_healthy}
 
   order-db:
     <<: *pg-common
@@ -54,9 +98,30 @@ services:
   saga-db:
     <<: *pg-common
     volumes: [saga_events:/var/lib/postgresql/data]
-  query-db:
-    <<: *pg-common
-    volumes: [query_views:/var/lib/postgresql/data]
+
+  history-db:
+    image: mongo:7.0
+    volumes: [history_views:/data/db]
+    ports: ["127.0.0.1:27019:27017"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1}).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Durable Rabbit integration queue -> keyed Kafka topic, acknowledged only
+  # after Kafka confirms persistence. Rabbit remains the Saga transport.
+  stream-bridge:
+    build: .
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://lab:lab@rabbit:5672/%2F
+      KAFKA_BOOTSTRAP: kafka:19092
+      KAFKA_TOPIC: orders.integration
+    command: ["python", "-m", "lab.stream_bridge"]
+    depends_on:
+      rabbit: {condition: service_healthy}
+      topics: {condition: service_completed_successfully}
 
   order:
     <<: *api-common
@@ -67,7 +132,8 @@ services:
     depends_on:
       rabbit: {condition: service_healthy}
       order-db: {condition: service_healthy}
-    ports: ["8211:8000"]
+      stream-bridge: {condition: service_started}
+    ports: ["127.0.0.1:8211:8000"]
   accounting:
     <<: *api-common
     environment:
@@ -77,7 +143,8 @@ services:
     depends_on:
       rabbit: {condition: service_healthy}
       accounting-db: {condition: service_healthy}
-    ports: ["8212:8000"]
+      stream-bridge: {condition: service_started}
+    ports: ["127.0.0.1:8212:8000"]
   kitchen:
     <<: *api-common
     environment:
@@ -87,7 +154,8 @@ services:
     depends_on:
       rabbit: {condition: service_healthy}
       kitchen-db: {condition: service_healthy}
-    ports: ["8213:8000"]
+      stream-bridge: {condition: service_started}
+    ports: ["127.0.0.1:8213:8000"]
   orchestrator:
     <<: *api-common
     environment:
@@ -97,23 +165,27 @@ services:
     depends_on:
       rabbit: {condition: service_healthy}
       saga-db: {condition: service_healthy}
-    ports: ["8214:8000"]
-  query:
+    ports: ["127.0.0.1:8214:8000"]
+  history:
     <<: *api-common
     environment:
       <<: *api-env
-      SERVICE_ROLE: query
-      DATABASE_URL: postgresql://demo:demo@query-db:5432/events
+      SERVICE_ROLE: history
+      MONGODB_URI: mongodb://history-db:27017/
+      MONGODB_DATABASE: order_history
+      KAFKA_BOOTSTRAP: kafka:19092
+      KAFKA_TOPIC: orders.integration
+      KAFKA_GROUP_ID: order-history-view
       ORDER_INTERNAL_URL: http://order:8000
       ACCOUNTING_INTERNAL_URL: http://accounting:8000
       KITCHEN_INTERNAL_URL: http://kitchen:8000
     depends_on:
-      rabbit: {condition: service_healthy}
-      query-db: {condition: service_healthy}
+      history-db: {condition: service_healthy}
+      topics: {condition: service_completed_successfully}
       order: {condition: service_started}
       accounting: {condition: service_started}
       kitchen: {condition: service_started}
-    ports: ["8215:8000"]
+    ports: ["127.0.0.1:8215:8000"]
   demo:
     build: .
     profiles: ["tools"]
@@ -122,7 +194,8 @@ services:
       ACCOUNTING_URL: http://accounting:8000
       KITCHEN_URL: http://kitchen:8000
       SAGA_URL: http://orchestrator:8000
-      QUERY_URL: http://query:8000
+      QUERY_URL: http://history:8000
+      RABBITMQ_URL: amqp://lab:lab@rabbit:5672/%2F
     entrypoint: ["python", "-m", "scripts.demo"]
     volumes: [demo_shared:/shared]
     depends_on:
@@ -130,6 +203,7 @@ services:
       accounting: {condition: service_started}
       kitchen: {condition: service_started}
       orchestrator: {condition: service_started}
+      history: {condition: service_started}
   unit-tests:
     build: .
     profiles: ["tools"]
@@ -137,9 +211,10 @@ services:
 
 volumes:
   rabbit_messages:
+  kafka_events:
   order_events:
   accounting_events:
   kitchen_events:
   saga_events:
+  history_views:
   demo_shared:
-  query_views:

@@ -19,15 +19,13 @@ BINDINGS = {
     "accounting": ["command.account.*"],
     "kitchen": ["command.kitchen.*"],
     "orchestrator": ["order.created", "reply.#"],
-    "query": ["integration.#"],
 }
 
 
 class MessageWorker:
-    def __init__(self, role: str, store: EventStore | None, query_store=None):
+    def __init__(self, role: str, store: EventStore):
         self.role = role
         self.store = store
-        self.query_store = query_store
         self.url = os.getenv("RABBITMQ_URL", "amqp://lab:lab@rabbit:5672/%2F")
         self.stop_event = threading.Event()
         self.threads: list[threading.Thread] = []
@@ -39,8 +37,7 @@ class MessageWorker:
         return connection, channel
 
     def start(self):
-        # Declare the durable queue and bindings before HTTP readiness. This
-        # avoids losing early integration events before the Query worker starts.
+        # Declare durable Saga command/reply queues before HTTP readiness.
         for attempt in range(30):
             connection = None
             try:
@@ -58,9 +55,8 @@ class MessageWorker:
                 if connection and connection.is_open:
                     connection.close()
         self.threads.append(threading.Thread(target=self._consumer_loop, daemon=True, name=f"{self.role}-inbox"))
-        if self.store is not None:
-            self.threads.append(threading.Thread(target=self._publisher_loop, daemon=True,
-                                                 name=f"{self.role}-outbox"))
+        self.threads.append(threading.Thread(target=self._publisher_loop, daemon=True,
+                                             name=f"{self.role}-outbox"))
         for thread in self.threads:
             thread.start()
 
@@ -86,10 +82,7 @@ class MessageWorker:
                         continue
                     try:
                         envelope = json.loads(body)
-                        if self.role == "query":
-                            self.query_store.project(envelope)
-                        else:
-                            handle_delivery(self.store, self.role, envelope)
+                        handle_delivery(self.store, self.role, envelope)
                         channel.basic_ack(delivery_tag=method.delivery_tag)
                     except Exception:
                         log.exception("Could not process %s message; will retry", self.role)
@@ -112,15 +105,15 @@ class MessageWorker:
                 channel.confirm_delivery()
 
                 def publish(routing_key, envelope):
-                    # 'mandatory' for commands/replies avoids losing them before
-                    # their durable destination queue has been declared/bound.
+                    # 'mandatory' also protects integration events until the
+                    # durable Kafka bridge queue has been declared/bound.
                     channel.basic_publish(
                         exchange=EXCHANGE, routing_key=routing_key,
                         body=json.dumps(envelope).encode("utf-8"),
                         properties=pika.BasicProperties(delivery_mode=2,
                                                         content_type="application/json",
                                                         message_id=envelope["message_id"]),
-                        mandatory=not routing_key.startswith("integration."),
+                        mandatory=True,
                     )
 
                 while not self.stop_event.is_set():

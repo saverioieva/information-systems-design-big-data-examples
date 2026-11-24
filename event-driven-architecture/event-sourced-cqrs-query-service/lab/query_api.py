@@ -1,4 +1,4 @@
-"""Two paths for the very same findOrder query: composition vs CQRS."""
+"""Order History Service: live API Composition versus Kafka-fed MongoDB CQRS."""
 from __future__ import annotations
 
 import asyncio
@@ -60,13 +60,22 @@ async def find_order_by_composition(order_id: str):
 
 @router.get("/find-order/{order_id}/cqrs")
 def find_order_by_cqrs(order_id: str, request: Request):
-    """One local read database query; services may be unavailable or slower."""
+    """One MongoDB document read; no synchronous dependency on the source APIs."""
     start = time.perf_counter()
     view = request.app.state.query_store.find_order(order_id)
     if view is None:
         raise HTTPException(status_code=404, detail="Projection not built yet or order not found")
     return {**view, "strategy": "CQRS_PROJECTION", "queried_services": [],
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 2)}
+
+
+@router.get("/order-history/{order_id}")
+def get_order_history(order_id: str, request: Request):
+    """Event timeline projected from Order, Accounting and Kitchen notifications."""
+    history = request.app.state.query_store.history(order_id)
+    if history is None:
+        raise HTTPException(status_code=404, detail="History not yet projected or order not found")
+    return history
 
 
 @router.post("/internal/reset-projection")

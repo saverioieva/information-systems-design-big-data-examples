@@ -10,7 +10,7 @@ import httpx
 
 from scripts.demo import URLS, create, get, show, wait_for_saga
 
-QUERY = os.getenv("QUERY_URL", "http://query:8000")
+QUERY = os.getenv("QUERY_URL", "http://history:8000")
 LAST_ORDER = "/shared/last-order-id"
 
 
@@ -37,32 +37,20 @@ def comparison(client: httpx.Client, oid: str, wait_projection: bool = True):
         except ValueError:
             data = res.text
         print(f"{strategy:12s} HTTP {res.status_code}: {json.dumps(data, default=str)}")
+        if strategy == "cqrs" and res.status_code == 200:
+            timeline = client.get(f"{QUERY}/order-history/{oid}", timeout=6)
+            timeline.raise_for_status()
+            print(f"history      {len(timeline.json()['timeline'])} integration events in MongoDB timeline")
         if strategy == "cqrs":
             assert res.status_code == 200
     return oid
 
 
-def rebuild(client):
-    res = client.post(QUERY + "/internal/reset-projection")
-    res.raise_for_status()
-    print("Read DB reset. Authoritative Event Stores untouched.")
-    for role in ("order", "accounting", "kitchen"):
-        r = client.post(URLS[role] + "/internal/requeue-integration")
-        r.raise_for_status()
-        print(role, r.json())
-    with open(LAST_ORDER, encoding="utf-8") as fd:
-        oid = fd.read().strip()
-    comparison(client, oid, wait_projection=True)
-    print("PASS: projected order reconstructed by replaying durable integration notifications")
-
-
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", choices=["compare", "compare-last", "rebuild"], default="compare")
+    parser.add_argument("--scenario", choices=["compare", "compare-last"], default="compare")
     args = parser.parse_args()
     with httpx.Client(timeout=6) as client:
-        if args.scenario == "rebuild":
-            return rebuild(client)
         if args.scenario == "compare":
             oid = create(client, reject=False)
             with open(LAST_ORDER, "w", encoding="utf-8") as fd:

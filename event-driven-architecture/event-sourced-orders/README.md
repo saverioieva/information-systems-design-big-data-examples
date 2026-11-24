@@ -123,7 +123,34 @@ API documentation: http://localhost:8102/docs. Postgres host port `55432`; Admin
 | Example script | [`scripts/demo.py`](scripts/demo.py) |
 | PostgreSQL and MongoDB Inbox adapters | [`app/adapters/outbound/postgres_inbox.py`](app/adapters/outbound/postgres_inbox.py), [`mongo_inbox.py`](app/adapters/outbound/mongo_inbox.py) and [`IDEMPOTENCY_POSTGRES_MONGODB.md`](IDEMPOTENCY_POSTGRES_MONGODB.md) |
 
-The library uses `@event` on aggregate methods, **not methods literally named `process(command)` and `apply(event)`**. Command handlers validate business rules and create events; the library reapplies recorded events when it reconstructs an aggregate.
+### Mapping the course slides to Python `eventsourcing`
+
+The slides use the conceptual separation **`process(command)`** (validate and decide which events to record) and **`apply(event)`** (evolve the Aggregate's state deterministically). This project uses the real [`eventsourcing` Python library](https://eventsourcing.readthedocs.io/) rather than defining methods with those literal names. **The mapping is conceptual, not a 1:1 API mapping.**
+
+| Concept in the slides | Where it happens in this lab | What to inspect |
+|---|---|---|
+| **Command** (e.g. ApproveOrder) | HTTP handler → `OrderService.approve_order()` → `OrderApplication.approve_order()` | `app/adapters/inbound/http_api.py`, `app/application/order_service.py`, `app/adapters/outbound/eventsourcing_application.py` |
+| **`process(command)`**: check rules and decide an event | `OrderApplication` checks `expected_version`, then invokes `order.approve()`. `Order.approve()` validates `APPROVAL_PENDING` and is decorated with `@event("OrderApproved")`. | `app/domain/models.py`, `app/adapters/outbound/eventsourcing_application.py` |
+| **Append the decided event** | `OrderApplication.save(order)` persists the pending library-generated event in `orderapplication_events`, enforcing stream version consistency. | `app/adapters/outbound/eventsourcing_application.py` |
+| **`apply(event)`**: evolve state | The `@event`-decorated Aggregate method is used by the library's event machinery to update state; the framework invokes the recorded events again when reconstructing an Order. There is **no handwritten `apply()` switch** in this lab. | `app/domain/models.py` and `self.repository.get(order_id)` |
+| **Replay / historic state** | `OrderApplication.get_order_version(order_id, version)` loads the stream to the requested version; `get_order()` rebuilds current state. | `app/adapters/outbound/eventsourcing_application.py` |
+| **Snapshot** | `is_snapshotting_enabled = True`, `snapshotting_intervals = {Order: 2}`. The library can restore a snapshot and apply only subsequent events. | `app/adapters/outbound/eventsourcing_application.py` |
+
+For example, approving a pending order follows this path:
+
+```text
+POST /orders/{id}/approve
+  -> OrderService.approve_order(id, expected_version)
+  -> OrderApplication.approve_order(...)
+  -> repository.get(id)            # replay events / use latest snapshot
+  -> order.approve()               # @event("OrderApproved")
+  -> save(order)                   # append the event, version conflict on stale write
+  -> later repository.get(id)      # reconstruct approved state from history
+```
+
+**Important difference from the diagram in the slides:** with `eventsourcing`, the decorated Aggregate method contains the state change and the decorator makes it an event-sourced transition. It is **not** a standalone pure `process()` function returning event objects followed by a separately written `apply()` function. To see that explicit separation in source code, open the next lab, [Event-Sourced Saga Orchestration](../event-sourced-saga-orchestration/), especially `lab/domain.py` (`process()`, `apply()`, `evolve()`).
+
+**Avoid conflating operations:** Kafka offsets, Event Store stream versions, snapshot versions, and CQRS projection checkpoints are different concepts. This first Event Sourcing service does not require a broker; publishing to external services is introduced separately in the Saga and CQRS labs.
 
 ## PostgreSQL data to inspect
 
@@ -178,7 +205,7 @@ The PostgreSQL Event Store is the source of truth; snapshots are replay optimiza
 
 The core `Order` still inherits from the `eventsourcing` framework's aggregate class and uses its event decorator. This is a pragmatic exception to framework-independent Domain design, documented for transparency. The MongoDB inbox example uses a bounded **single-document atomic update**; it is not a general MongoDB Event Store or a substitute for transactions across multiple documents.
 
-**Slide placement:** present the full comparison after **Aggregate-Only vs Event-Sourced Order** (slide 17). Optionally preview the backend contrast on **Reliable Publishing and Idempotent Consumers** (slide 13).
+**Slide placement:** present the Aggregate comparison on **slide 23**; connect snapshots to **slide 16**, optimistic locking to **slide 14**, and the standalone PostgreSQL vs MongoDB idempotency demo to **slide 19** of the 44-slide deck.
 
 ## Test and cleanup
 
