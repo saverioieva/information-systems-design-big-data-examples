@@ -1,0 +1,17 @@
+{
+  "name": "queue_subscription2",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "echo \"The build step is not required when using JavaScript!\" && exit 0",
+    "cdk": "cdk",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.1149.0",
+    "jest": "^30"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.277.0",
+    "constructs": "^10.5.0"
+  }
+}

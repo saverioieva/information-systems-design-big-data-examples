@@ -1,0 +1,10 @@
+{
+  "Resources": {
+    "LocalBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": "cfn-quickstart-bucket"
+      }
+    }
+  }
+}

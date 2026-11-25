@@ -1,0 +1,13 @@
+------ CloudFormation-----------------------------------------
+Deploy a stack: awslocal cloudformation deploy --stack-name cfn-quickstart-stack --template-file "./stack.json"
+
+List buckets: awslocal s3api list-buckets
+
+Delete a stack: awslocal cloudformation delete-stack --stack-name cfn-quickstart-stack
+
+-------------CDK-----------------------------------------------
+List topics: awslocal sns list-topics
+
+Publish a message to a topic: awslocal sns publish --topic-arn "arn:aws:sns:us-east-1:000000000000:my-topic" --message "Hello!!!"
+
+Check if message arrived: awslocal sqs receive-message --queue-url "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/my-queue"
