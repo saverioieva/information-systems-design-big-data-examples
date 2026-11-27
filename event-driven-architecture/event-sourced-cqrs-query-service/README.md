@@ -106,6 +106,43 @@ make inspect-query
 
 For MongoDB Compass, connect to `mongodb://localhost:27019/`, database `order_history`, collection `order_history` (local development only, no authentication).
 
+## Guided demo: what to see in each system
+
+Run the following **in order** after `make up`, from this directory. This stack includes the four Event-Sourced services of the Saga lab **plus** Kafka, the bridge, MongoDB, and the external Order History Service. It uses a small custom PostgreSQL Event Store (`psycopg`) and explicit `process()`/`apply()` code, **not** Python's `eventsourcing` package, which appears in `event-sourced-orders/`.
+
+| Run | What the script does | What you should observe |
+|---|---|---|
+| `make demo-comparison` | Creates a new Order, waits for Saga `COMPLETED`, waits for the MongoDB read model to catch up, then queries the **same** order with both strategies. | Both `/composition` and `/cqrs` return HTTP **200** with compatible Order/payment/Kitchen statuses; an `order-history` timeline count is also printed. |
+| `make inspect-query` | Executes a MongoDB query against `order_history.order_history`. | `order_status`, `payment_status`, `kitchen_status`, `source_versions`, and `timeline` for projected orders. |
+| `make kafka-groups` | Inspects Kafka consumer-group progress. | Group `order-history-view`, offsets and lag for `orders.integration`; these are **not Aggregate versions**. |
+| `make demo-outage` | Creates another completed Order, then stops Kitchen temporarily and queries it again. | Live API Composition returns **503**; the CQRS route continues to serve the last MongoDB projection. The Make recipe starts Kitchen again on exit. |
+| `make demo-catchup` | Stops the History consumer, creates an Order and restarts History. | Kafka retains Integration Events while History is offline; the consumer catches up from its own committed offsets. |
+| `make rebuild-projection` | Clears the **derived** MongoDB documents, resets History group's offsets to earliest **retained** Kafka records, and restarts the consumer. | Reconstructed projections, without deleting any of the four authoritative PostgreSQL Event Stores. Run the comparison first to create a consumer group with offsets. |
+
+**Trace a single Order ID** from the `make demo-comparison` output: (1) `GET /events/{id}` of each source service shows local Aggregate events; (2) Kafbat Kafka UI **<http://localhost:8087> → Topics → `orders.integration`** shows Kafka integration messages keyed by that Order ID; (3) **Consumer Groups → `order-history-view`** shows the History consumer's offsets; (4) MongoDB collection `order_history` contains the projected current view and timeline. The view can be **eventually consistent**—do not infer synchronous completion from an Event Store append.
+
+### Browse the four PostgreSQL Event Stores using Adminer
+
+Start the optional SQL browser *after* `make up`:
+
+```bash
+make adminer
+```
+
+Open **<http://localhost:8184>** → select **PostgreSQL** → **Username:** `demo`, **Password:** `demo`, **Database:** `events`. Select **Server** `order-db`, `accounting-db`, `kitchen-db`, or `saga-db` (the names of four independent Compose services). After login, click **SQL command** and inspect:
+
+```sql
+SELECT aggregate_id, version, event_type, payload
+FROM events ORDER BY occurred_at, version LIMIT 100;
+SELECT aggregate_id, aggregate_type, version FROM aggregate_heads;
+SELECT message_id, processed_at FROM inbox ORDER BY processed_at DESC LIMIT 20;
+SELECT outbox_id, routing_key, published_at FROM outbox ORDER BY outbox_id DESC LIMIT 30;
+```
+
+The query service's database is **MongoDB, not PostgreSQL**, so **Adminer cannot browse the Order History projection**. Use `make inspect-query` or MongoDB Compass with connection `mongodb://localhost:27019/`, database `order_history`, collection `order_history`. The `timeline` is derived from **Integration Events**, not a direct copy of the domain-event tables. In Kafbat UI use <http://localhost:8087> for Kafka, and RabbitMQ Management at <http://localhost:15683> with `lab`/`lab` for the Saga command/reply routes.
+
+**Practical comparison:** Adminer answers "what did the authoritative service persist?"; Kafka UI answers "which integration records were published and what has the consumer read?"; MongoDB answers "what is the external query service currently able to return?". These are **three different storage/processing boundaries**.
+
 ## Live API Composition versus the CQRS read model
 
 ```mermaid

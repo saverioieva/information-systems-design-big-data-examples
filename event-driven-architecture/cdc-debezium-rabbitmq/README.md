@@ -142,6 +142,33 @@ make slots
 
 In **Kafka UI → Topics**, compare `cdc_orders.public.orders` (raw row-level changes) with `orders.integration` (business integration events): inspect message key, value, partition and offset. After `make register`, use **Kafka Connect** in the same UI to inspect the `orders-raw` and `orders-outbox` connectors. Connector registration and restarts are still managed by the existing scripts; the UI is an observation tool, not a replacement for the CDC pipeline. The browser connects to port `8086`, while the UI container reaches Kafka at `kafka:19092` and Connect at `http://connect:8083`.
 
+## Guided inspection: Adminer, Kafka UI, RabbitMQ and the Audit Inbox
+
+This example has four **different observable stages**. The goal is to follow **the same business action** through each stage rather than treating every record as the same kind of event.
+
+1. **PostgreSQL with Adminer:** `make up` starts Adminer automatically. Open **<http://localhost:8084>**, select **PostgreSQL**, then enter **Server:** `postgres`, **Username:** `demo`, **Password:** `demo`, **Database:** `orders`.
+2. Click **`orders` → Select data** to see the current Order row and its `CREATED`/`APPROVED` status. Click **`outbox_events` → Select data** to see the explicit business event record committed by the application. These are **two different tables written in the same SQL transaction**.
+3. Open Adminer's **SQL command** and run:
+
+   ```sql
+   SELECT id, amount, status, created_at FROM orders ORDER BY created_at DESC;
+   SELECT event_id, aggregate_id, event_type, payload, created_at
+   FROM outbox_events ORDER BY created_at DESC;
+   ```
+
+4. **Debezium and Kafka:** first run `make register`, then open **<http://localhost:8086> → Kafka Connect** and confirm both `orders-raw` and `orders-outbox` connectors are running. Under **Topics**, inspect `cdc_orders.public.orders` (storage-level change envelope) and `orders.integration` (business record emitted from the Outbox Router). Use `make raw COUNT=1` and `make integration COUNT=1` as CLI alternatives.
+5. **RabbitMQ and Audit:** open **<http://localhost:15675>** (user/password `student`/`student`), inspect the `orders.events` topic exchange and the `audit.orders` queue; then run `make audit`. The Audit Service stores processed event IDs in its **own SQLite database**, not in the PostgreSQL instance viewed via Adminer. `make poison` and `make dlq` demonstrate its error route.
+
+### Follow the two possible database writes
+
+| Action | `orders` table | `outbox_events` table | Kafka consequence |
+|---|---|---|---|
+| `make create` (application API) | Inserts a current-state Order | Inserts `OrderCreated` intent in the same transaction | Raw CDC `INSERT` **and** business Integration Event |
+| `make db-update` (direct SQL) | Updates an existing row to `APPROVED` | **No additional Outbox row** | Raw CDC `UPDATE` but **no** new business Integration Event |
+| `make approve ORDER_ID=<id>` (application API) | Updates state via application logic | Inserts `OrderApproved` intent | Both raw CDC and a new business Integration Event |
+
+**Interpretation:** Debezium tails PostgreSQL's WAL; it does **not** invent `OrderApproved` from an SQL `UPDATE`. Only the application can decide which business facts to record in its Outbox. This is **Transactional Outbox + CDC**, not Event Sourcing: the `orders` table remains the authoritative **current state**.
+
 ## Scenario A - Raw CDC versus Integration Events
 
 Create one order:

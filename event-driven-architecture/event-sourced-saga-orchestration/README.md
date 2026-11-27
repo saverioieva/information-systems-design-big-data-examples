@@ -92,6 +92,56 @@ make down
 
 Service Swagger UIs: [Order](http://localhost:8211/docs), [Accounting](http://localhost:8212/docs), [Kitchen](http://localhost:8213/docs), [Orchestrator](http://localhost:8214/docs). RabbitMQ Management: <http://localhost:15683> (`lab` / `lab`).
 
+## Guided walkthrough: follow one Saga through four Event Stores
+
+The scripts in [`scripts/demo.py`](scripts/demo.py) are **automated scenarios**, not interactive prompts. Each run prints a new Order ID, each service's current status, Aggregate version, and the **event types obtained from its `GET /events/{order_id}` endpoint**. The output tells you *what was persisted*, not merely that HTTP returned 200.
+
+1. Run `make up` and `make demo-happy`. Wait for the final **`PASS: COMPLETED`** message. The Order is `APPROVED`, Accounting is `AUTHORIZED`, Kitchen is `ACCEPTED`, and the orchestrator is `COMPLETED`.
+2. Run `make inspect-saga` and `make inspect-accounting`. The Saga's event stream records successive requests and replies; Accounting's **different PostgreSQL database** records `AccountAuthorized` and technical `SagaReplyRequested`.
+3. Run `make demo-compensation`. It requests a **Kitchen rejection**: the orchestrator sends compensation commands; Accounting moves to `VOIDED`, Order to `CANCELLED`, and the Saga to `COMPENSATED`. This is a *new Order ID*, not a rollback of the previous successful demonstration.
+4. Run `make demo-recovery`. The Make target stops Accounting, starts a Saga that pauses at `AUTHORIZING`, restarts the orchestrator, and brings Accounting back. Recovery works because the orchestrator **replays its persisted Saga stream**; the script also sends a duplicate `OrderCreated` delivery to verify no extra Saga events are appended.
+5. Use `make inspect-order`, `make inspect-kitchen`, and `make inspect-saga` to compare each service's event history. The service databases have **the same table names but contain different events** because each service owns its data.
+
+**Read the implementation in execution order:** [`lab/messaging.py`](lab/messaging.py) (durable RabbitMQ delivery) → [`lab/handlers.py`](lab/handlers.py) (routing) → [`lab/saga_handlers.py`](lab/saga_handlers.py) (participant-specific message-to-command translation) → [`lab/application.py`](lab/application.py) (application coordination) → [`lab/domain.py`](lab/domain.py) (`process(command)` decides, `apply()` reconstructs) → [`lab/storage.py`](lab/storage.py) (append events, Inbox and Outbox atomically). On the orchestrator side [`lab/orchestration.py`](lab/orchestration.py) makes workflow decisions. **This lab uses `psycopg` plus an explicit educational Event Store, not the Python `eventsourcing` package used in the preceding lab.**
+
+### Inspect each PostgreSQL Event Store with Adminer
+
+An optional Adminer service is now included for SQL exploration. It is **not** started by `make up`; start it when you need the database UI:
+
+```bash
+make adminer
+```
+
+Open **<http://localhost:8183>** and choose **PostgreSQL**. Use **Username:** `demo`, **Password:** `demo`, **Database:** `events`. Change the **Server** field to select the database you want:
+
+| Adminer Server | Owner | Useful contents |
+|---|---|---|
+| `order-db` | Order Service | `OrderCreated`, `OrderApproved`, or `OrderCancelled` |
+| `accounting-db` | Accounting Service | `AccountAuthorized`, `AuthorizationVoided`, and Saga reply-request events |
+| `kitchen-db` | Kitchen Service | `TicketAccepted` or `TicketRejected` and reply requests |
+| `saga-db` | Saga Orchestrator | `SagaOrchestratorCreated`, requests, replies, completion/compensation |
+
+After login, open **SQL command** and run the following separately for each Server:
+
+```sql
+-- Per-Aggregate stream and event sequence.
+SELECT aggregate_id, version, event_type, payload
+FROM events ORDER BY occurred_at, version LIMIT 100;
+
+-- Current Aggregate metadata: analogous to ENTITIES in the slides.
+SELECT aggregate_id, aggregate_type, version FROM aggregate_heads;
+
+-- Received message IDs already processed; why duplicate deliveries are safe.
+SELECT message_id, processed_at FROM inbox ORDER BY processed_at DESC LIMIT 20;
+
+-- Messages waiting to be published, or already sent to RabbitMQ.
+SELECT outbox_id, routing_key, published_at FROM outbox ORDER BY outbox_id DESC LIMIT 30;
+```
+
+Adminer runs inside Docker, so **do not use `localhost`** in its Server field. The four PostgreSQL services are not published as host database ports; the Compose service names above are how Adminer reaches them. The `aggregate_heads.version` column tracks the latest stream version and is used with a row lock; `events.version` tracks every individual event, and `inbox.message_id` is for message deduplication (a different concern from concurrency).
+
+**Technical nuance:** the current code records both a **`SagaReplyRequested` technical pseudo-event** in the participant's event stream *and* the outgoing reply in that service's transactional Outbox. The pseudo-event explains the Richardson-style event-store technique; the Outbox actually drives the reliable RabbitMQ publication. The Saga orchestrator being event-sourced is an independent choice—it does not force participants to use pseudo-events.
+
 ## Business workflow: successful and compensating Saga
 
 ```mermaid

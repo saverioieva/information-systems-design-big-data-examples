@@ -1,7 +1,11 @@
-.PHONY: up down reset logs test demo-happy demo-compensation demo-recovery demo-comparison demo-outage demo-catchup rebuild-projection inspect inspect-order inspect-accounting inspect-kitchen inspect-saga inspect-query kafka-info kafka-groups kafka-ui
+.PHONY: adminer up down reset logs test demo-happy demo-compensation demo-recovery demo-comparison demo-outage demo-catchup rebuild-projection inspect inspect-order inspect-accounting inspect-kitchen inspect-saga inspect-query kafka-info kafka-groups kafka-ui
 
 up:
 	docker compose up -d --build --wait order accounting kitchen orchestrator history stream-bridge kafka-ui
+
+adminer:
+	docker compose up -d adminer
+	@echo "Adminer: http://localhost:8184 (PostgreSQL: server order-db, accounting-db, kitchen-db, or saga-db; database events; user/password demo)"
 
 down:
 	docker compose down

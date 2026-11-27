@@ -82,6 +82,41 @@ API documentation: http://localhost:8101/docs; PostgreSQL: `localhost:55431`; op
 
 `make demo` automatically creates an order, adds an item, attempts an update with a stale version (expected **409**), then approves the current version. Each operation prints the resulting response; no user prompts are needed.
 
+## Guided demo: what `make demo` actually does
+
+Start the services with `make up`, then run `make demo` **from this laboratory directory**. The script [`scripts/demo.py`](scripts/demo.py) makes four REST requests, without asking for input:
+
+| Step printed by the demo | HTTP operation | What to observe |
+|---|---|---|
+| 1. Created current-state order (v1) | `POST /orders` | Returns an order ID, `row_version = 1`, and its initial pizza line. |
+| 2. SQL rows overwritten (v2) | `POST /orders/{id}/items` | Adds water; the latest state has `row_version = 2`. The application updates ordinary SQL rows, not an Event Store. |
+| 3. Stale version rejected | `POST /orders/{id}/approve` with `expected_version = 1` | HTTP **409**, because the version is already 2. |
+| 4. Approved | Same approval operation with `expected_version = 2` | The Order becomes `APPROVED`, with a newer version. |
+
+The ID is generated anew on each execution. Use the ID printed under step 1 to locate **the same order** in SQL. The rejected request adds no historical record. If you run `make demo` repeatedly, you create more independent orders; you do not start over unless you use `make reset` (which deletes the volume).
+
+### Inspect PostgreSQL using Adminer (click by click)
+
+`make up` starts **`db` and `app` only**, so start the optional SQL UI separately:
+
+```bash
+make up
+docker compose up -d adminer
+```
+
+1. Open **<http://localhost:8181>**; select **PostgreSQL** as the system.
+2. Log in with **Server:** `db`, **Username:** `ftgo`, **Password:** `ftgo`, **Database:** `ftgo`. The server is `db`, **not** `localhost`: Adminer runs inside the Compose network.
+3. Select **`orders` → Select data** and find the demo order ID. Observe one current row with `state = APPROVED` and its latest `version`.
+4. Open **`order_line_items` → Select data**: the pizza and water rows are related to the same `order_id`.
+5. Open **SQL command** and run:
+
+```sql
+SELECT id, state, version FROM orders ORDER BY id;
+SELECT order_id, menu_item_id, quantity FROM order_line_items ORDER BY order_id, id;
+```
+
+Contrast this with Event-Sourced Orders: there is **no `events` table** holding versions 1, 2 and 3. `make inspect` is the CLI alternative when you do not want a browser. Both the demo and Adminer use **development-only credentials**.
+
 ## Current-state persistence: what is stored?
 
 | SQL object | Purpose | Key fields |

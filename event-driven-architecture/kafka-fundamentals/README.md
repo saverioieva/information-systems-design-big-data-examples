@@ -17,6 +17,21 @@ This example is part of [Chapter 5 — Event-Driven Architecture](../README.md).
 | **Independent replay** | A new consumer group can read retained records from the beginning of the topic. |
 | **At-least-once processing** | A consumer commits *after* handling each record. A crash before commit can cause that record to be read again. |
 
+## Quick learning path: run a command, inspect the result
+
+This lab has **no SQL database and no Adminer**: Kafka itself owns the retained event log. Start at [`Complete walkthrough`](#complete-walkthrough), which explains the CLI and Kafbat UI side by side. The minimal first run is:
+
+```bash
+make up                     # broker, UI and 3-partition topic
+make partitions             # describe orders.events
+make produce COUNT=12       # emit keyed records
+make consume LIMIT=12       # consume in order-processors group
+make group-info GROUP=order-processors
+make replay LIMIT=12        # a NEW group rereads retained records
+```
+
+In **<http://localhost:8085> → Topics → `orders.events`**, open the **Messages** and **Partitions** tabs and compare message **key**, partition and offset. Then select **Consumer Groups** to observe the `order-processors` group's **committed** offsets. **A Kafka log offset is not an Aggregate Event Store version**, and a group's next committed offset is not the topic's end offset. Existing Kafka records persist across `make down`; use `make reset` only when you intentionally want a clean experiment.
+
 ## Requirements and services
 
 Requires Docker with the Compose plugin and `make`. Python 3.10+ is needed only to run the unit tests directly on the host.

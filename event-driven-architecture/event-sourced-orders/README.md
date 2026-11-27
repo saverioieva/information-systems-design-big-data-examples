@@ -99,6 +99,40 @@ make inspect-snapshots
 
 API documentation: http://localhost:8102/docs. Postgres host port `55432`; Adminer http://localhost:8182 (server `db`, database `orders_es`, user/password `eventsourcing`).
 
+## First, understand the `eventsourcing` Python library
+
+This laboratory uses the real open-source **[`eventsourcing` Python package](https://eventsourcing.readthedocs.io/), version 9.x** (see `eventsourcing[postgres]>=9.3,<10` in [`requirements.txt`](requirements.txt)), with its PostgreSQL persistence module. It is **not** a custom Event Store implementation and it does **not** require Kafka or RabbitMQ. The library provides an Aggregate base class, the `@event` decorator, an application/repository abstraction, persistence of versioned event streams, concurrency checks, and snapshots.
+
+Follow this short code-reading path **before** running the demo:
+
+1. [`app/domain/models.py`](app/domain/models.py): `class Order(Aggregate)`, the `@event("Created")` constructor and `@event("ItemAdded")`, `@event("OrderApproved")` methods. These methods express state transitions and invariants.
+2. [`app/adapters/outbound/eventsourcing_application.py`](app/adapters/outbound/eventsourcing_application.py): `OrderApplication` loads with `self.repository.get(order_id)`, invokes the Aggregate method, then calls `self.save(order)` to append its new events. It also configures `snapshotting_intervals = {Order: 2}`.
+3. [`app/application/order_service.py`](app/application/order_service.py): the course-facing application service and `OrderStore` port; [`app/adapters/inbound/http_api.py`](app/adapters/inbound/http_api.py) exposes HTTP without requiring callers to know the library.
+4. [`app/adapters/outbound/order_head_projection.py`](app/adapters/outbound/order_head_projection.py): an extra derived `order_head` table, **not** the authoritative Event Store or the mechanism that provides event-stream optimistic locking.
+
+**Connection to the slides' `process()` / `apply()` model:** `OrderApplication` loads the state and handles the command; a decorated `Order` method validates and performs the transition; `@event` captures the corresponding event, and `self.save(order)` appends it. During replay the library applies recorded events to reconstruct an Order. There is **no separate handwritten `process()` / `apply()` switch in this example**; that explicit teaching implementation appears in [`../event-sourced-saga-orchestration/lab/domain.py`](../event-sourced-saga-orchestration/lab/domain.py).
+
+## Guided demo: compare commands, event rows, replay and snapshots
+
+```bash
+make up
+make demo
+make inspect
+make inspect-snapshots
+```
+
+[`scripts/demo.py`](scripts/demo.py) is **non-interactive**. It prints the full responses and the ID of a newly created order; its sequence is:
+
+| Demo step | What the command causes | Where to verify |
+|---|---|---|
+| 1. Create | The `Created` event is appended at Aggregate version **1**. | `orderapplication_events`, one row for the printed `originator_id`. |
+| 2. Add water | `ItemAdded` is appended at version **2**; the snapshot interval is 2. | Events v1/v2 and the `orderapplication_snapshots` table. |
+| 3. Read version 1 | `GET /orders/{id}/versions/1` reconstructs the **old** Order, where water is absent. | Compare the step-2 response with the historical response. |
+| 4. Stale approve | `expected_version = 1` conflicts with current version 2 and returns HTTP **409**. | No new approval event should be appended for this rejected call. |
+| 5. Valid approve | A fresh expected version produces `OrderApproved`, version **3**. | Events v1/v2/v3 and derived `order_head.current_version`. |
+
+**Why the snapshots matter:** reading current state normally means replaying events in order; a snapshot at version N permits replay from N+1. The saved snapshot is **not** a replacement for the event stream. **Why the version matters:** every event has a stream version, and conflicting appends are rejected, even without a separate SQL `ENTITIES` table. Running the demo twice creates different Aggregate IDs, so filter queries using the printed ID when explaining a single stream.
+
 ## Expected results
 
 | Stage | Result |
@@ -166,6 +200,38 @@ To inspect the optional read model:
 ```bash
 docker compose exec -T db psql -U eventsourcing -d orders_es -c 'SELECT * FROM order_head ORDER BY updated_at DESC LIMIT 5;'
 ```
+
+### Inspect `eventsourcing` tables in Adminer
+
+`make up` does not automatically start the optional Adminer container. In this directory, run:
+
+```bash
+docker compose up -d adminer
+```
+
+Open **<http://localhost:8182>**, choose **PostgreSQL**, and log in with **Server:** `db`, **Username:** `eventsourcing`, **Password:** `eventsourcing`, **Database:** `orders_es`. The `db` name resolves between Docker containers; do **not** use `localhost` in Adminer's Server field.
+
+In **SQL command**, start with:
+
+```sql
+-- Each event is an immutable row, ordered by Aggregate version.
+SELECT originator_id, originator_version, topic
+FROM orderapplication_events
+ORDER BY originator_id, originator_version;
+
+-- One or more replay checkpoints, depending on the demo runs.
+SELECT originator_id, originator_version
+FROM orderapplication_snapshots
+ORDER BY originator_id, originator_version;
+
+-- A derived, current-version projection; not the Event Store.
+SELECT order_id, current_version, aggregate_schema_version
+FROM order_head ORDER BY updated_at DESC;
+```
+
+Select **`orderapplication_events`** to inspect the `topic` (library event class/type), `originator_id` (Aggregate ID), `originator_version` (stream position) and `state` (serialized event data). The `state` column is encoded by the library, so it is **not guaranteed to be human-readable JSON in Adminer**: use the REST response for domain fields and this table for identity/version/replay concepts. Compare the order's event versions with `order_head.current_version`; the projection is **derived** and may briefly lag behind the Event Store because it is written separately.
+
+Use `make inspect` and `make inspect-snapshots` if you prefer `psql`. The MongoDB service in this lab is only for the **separate idempotency exercise**; Adminer is a PostgreSQL UI, not a MongoDB browser.
 
 ## Additional example - Idempotency with PostgreSQL and MongoDB
 

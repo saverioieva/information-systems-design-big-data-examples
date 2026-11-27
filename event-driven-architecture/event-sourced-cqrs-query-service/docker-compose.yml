@@ -186,6 +186,12 @@ services:
       accounting: {condition: service_started}
       kitchen: {condition: service_started}
     ports: ["127.0.0.1:8215:8000"]
+  # Optional SQL browser for the four independent PostgreSQL Event Stores.
+  # Not launched by `make up`; start explicitly with `make adminer`.
+  adminer:
+    image: adminer:4
+    ports: ["127.0.0.1:8184:8080"]
+
   demo:
     build: .
     profiles: ["tools"]

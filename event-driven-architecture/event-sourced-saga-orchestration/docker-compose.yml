@@ -95,6 +95,12 @@ services:
       rabbit: {condition: service_healthy}
       saga-db: {condition: service_healthy}
     ports: ["8214:8000"]
+  # Optional SQL browser for the four independent PostgreSQL Event Stores.
+  # Not launched by `make up`; start explicitly with `make adminer`.
+  adminer:
+    image: adminer:4
+    ports: ["127.0.0.1:8183:8080"]
+
   demo:
     build: .
     profiles: ["tools"]

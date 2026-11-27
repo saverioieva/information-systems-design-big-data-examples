@@ -1,6 +1,10 @@
-.PHONY: up down reset logs test demo-happy demo-compensation demo-recovery inspect inspect-order inspect-accounting inspect-kitchen inspect-saga
+.PHONY: adminer up down reset logs test demo-happy demo-compensation demo-recovery inspect inspect-order inspect-accounting inspect-kitchen inspect-saga
 up:
 	docker compose up -d --build --wait order accounting kitchen orchestrator
+
+adminer:
+	docker compose up -d adminer
+	@echo "Adminer: http://localhost:8183 (PostgreSQL: server order-db, accounting-db, kitchen-db, or saga-db; database events; user/password demo)"
 
 down:
 	docker compose down

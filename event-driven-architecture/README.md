@@ -21,6 +21,23 @@ The **DDD Aggregates and Domain Events** example remains in [Chapter 4 - Microse
 
 The labs run as **separate Docker Compose stacks**. The CDC example includes its own Kafka instance and does not depend on Kafka Fundamentals. Run one stack at a time to simplify resource use. The Kafka Fundamentals, CDC and Order History stacks each include **Kafbat UI** for inspecting topics, partitions, messages and consumer groups. The UIs are bound to localhost: **<http://localhost:8085>** (Kafka Fundamentals), **<http://localhost:8086>** (CDC), and **<http://localhost:8087>** (Order History CQRS).
 
+## Practical navigation: which demo and which inspection UI?
+
+All commands below run **inside the corresponding example directory**. Read each example's **Guided demo / walkthrough** section before executing commands; it explains the expected responses and the exact persistence layer to observe.
+
+| Lab | First runnable demonstration | Observe in the browser | Read-only database inspection |
+|---|---|---|---|
+| [Kafka Fundamentals](kafka-fundamentals/) | `make up`, `make produce`, `make consume` | [Kafka UI :8085](http://localhost:8085) | Kafka topics, partitions, offsets; **no Adminer** |
+| [CDC / Debezium](cdc-debezium-rabbitmq/) | `make up`, `make register`, `make create` | [Adminer :8084](http://localhost:8084), [Kafka UI :8086](http://localhost:8086), [RabbitMQ :15675](http://localhost:15675) | PostgreSQL tables `orders` and `outbox_events`, then Audit SQLite using `make audit` |
+| [Aggregate-Only](aggregate-only/) | `make up`, `make demo` | Swagger [ :8101/docs](http://localhost:8101/docs); optional [Adminer :8181](http://localhost:8181) | Current-state `orders` and `order_line_items` |
+| [Event-Sourced Orders](event-sourced-orders/) | `make up`, `make demo` | Swagger [ :8102/docs](http://localhost:8102/docs); optional [Adminer :8182](http://localhost:8182) | `orderapplication_events`, `orderapplication_snapshots`, `order_head` |
+| [Event-Sourced Saga](event-sourced-saga-orchestration/) | `make up`, `make demo-happy` | [RabbitMQ :15683](http://localhost:15683); optional [Adminer :8183](http://localhost:8183) | Four independent PostgreSQL Event Stores (`events`, `aggregate_heads`, `inbox`, `outbox`) |
+| [Saga + CQRS Order History](event-sourced-cqrs-query-service/) | `make up`, `make demo-comparison` | [Kafka UI :8087](http://localhost:8087); optional [Adminer :8184](http://localhost:8184) | Four source PostgreSQL stores via Adminer; **MongoDB** via `make inspect-query` / Compass |
+
+**Adminer launch:** the Aggregate-Only and Event-Sourced Orders examples use `docker compose up -d adminer` after `make up`; the Saga and CQRS examples provide **`make adminer`**. CDC starts Adminer with `make up`. Inside the Adminer login screen, use the **Compose database service name** (`db`, `postgres`, `order-db`, etc.) as Server, **not `localhost`**. Adminer does **not** browse MongoDB.
+
+**Event Sourcing library choice:** [`event-sourced-orders/`](event-sourced-orders/) uses Python **`eventsourcing` 9.x**, whose `Aggregate` and `@event` decorator encapsulate the concepts taught as `process()` and `apply()`. The Saga/CQRS labs instead use a **small explicit PostgreSQL Event Store with `psycopg`** so that participants' `process(command)` and `apply(event)`, per-service Inbox/Outbox and Saga coordination can be inspected directly in code. The different implementations are intentional; neither framework is a prerequisite for the other.
+
 ## How the examples fit together
 
 **Labs 1-2: Event streaming, CDC and message integration.** The first example covers keyed Kafka messages, partition ownership, offsets and replay. The second compares raw PostgreSQL row changes with explicit Outbox business facts and follows an Integration Event through Debezium, Kafka, the RabbitMQ bridge and the SQLite Audit Inbox. These examples **do not implement Event Sourcing**.
